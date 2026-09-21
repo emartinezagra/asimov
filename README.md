@@ -1,6 +1,6 @@
 # Asimov
 
-Bot de Telegram con memoria conversacional (SQLite) y memoria semántica (RAG con ChromaDB), pensado para correr en local contra [Ollama](https://ollama.com) u otro LLM compatible con su API.
+Bot de Telegram con memoria persistente estructurada y resumen progresivo de conversación (todo en SQLite), pensado para correr en local contra [Ollama](https://ollama.com) u otro LLM compatible con su API, y optimizado para dar la mejor calidad posible con el mínimo de tokens de contexto — especialmente pensado para modelos pequeños como Llama 3.2 3B.
 
 ## Instalación rápida (recomendada)
 
@@ -21,10 +21,9 @@ Te pedirá elegir el estilo de respuesta del bot, el token de Telegram (de [@Bot
 ### Requisitos
 
 - Python 3.10+
-- [Ollama](https://ollama.com) corriendo en local (`http://127.0.0.1:11434` por defecto), con los modelos:
+- [Ollama](https://ollama.com) corriendo en local (`http://127.0.0.1:11434` por defecto), con el modelo de chat que vayas a usar:
   ```bash
   ollama pull llama3.2:3b
-  ollama pull nomic-embed-text
   ```
 - Un token de bot de Telegram (se obtiene hablando con [@BotFather](https://t.me/BotFather))
 
@@ -55,8 +54,7 @@ Variables disponibles en `.env`:
 | `OLLAMA_KEEP_ALIVE` | Cuánto mantiene Ollama el modelo cargado en RAM tras cada uso (`-1` = no descargar nunca) | `30m` |
 | `CHAT_MODEL` | Modelo de chat a usar | `llama3.2:3b` |
 | `RESPONSE_STYLE` | Estilo de respuesta: `brief`, `technical` o `balanced` | `balanced` |
-| `DB_PATH` | Ruta del SQLite de conversaciones | `./conversations.db` |
-| `MEMORY_DB_PATH` | Ruta del store de ChromaDB | `./memory_db` |
+| `DB_PATH` | Ruta del SQLite de conversaciones, estado y memoria | `./conversations.db` |
 
 `.env` **no** se sube al repositorio (está en `.gitignore`) — cada persona usa su propio token.
 
@@ -67,7 +65,7 @@ source venv/bin/activate
 python bot.py
 ```
 
-`conversations.db` y `memory_db/` se crean automáticamente en el primer arranque; tampoco se versionan, ya que son datos generados en tiempo de ejecución (historial de conversaciones y memoria semántica).
+`conversations.db` se crea automáticamente en el primer arranque; tampoco se versiona, ya que son datos generados en tiempo de ejecución (historial de conversaciones, estado y memoria).
 
 Para dejarlo corriendo tras cerrar la sesión SSH sin usar `systemd`, puedes usar `tmux` o `screen`:
 
@@ -111,21 +109,27 @@ python configure.py
 
 `configure.py` actualiza `.env` (sin tocar el resto de variables, como el token) y reinicia el bot automáticamente si está corriendo como servicio `systemd`; si no, te indica cómo reiniciarlo a mano.
 
-## Tamaño del prompt
+## Arquitectura del contexto
 
-Cada mensaje se envía a Ollama junto con recuerdos relevantes (RAG) y los últimos turnos de la conversación. Para que ese contexto no crezca sin límite y dispare el tiempo de `prompt_eval` (sobre todo sin GPU), `bot.py` acota, mediante constantes al principio del fichero:
+Cada mensaje se construye en capas (`build_prompt()` en `bot.py`), y **una capa vacía se omite por completo** del prompt en vez de mostrarse como "sin datos":
 
-- `MEMORY_RESULTS` (3) / `MEMORY_SNIPPET_CHARS` (300) — cuántos recuerdos se recuperan y cuántos caracteres de cada uno se usan.
-- `HISTORY_MESSAGES` (6) / `HISTORY_SNIPPET_CHARS` (300) — lo mismo para los mensajes recientes de la conversación.
-- `MEMORY_STORE_CHARS` (500) — también se recorta lo que se guarda como recuerdo nuevo, para que no siga creciendo indefinidamente.
+```
+[SYS]     Instrucciones fijas: fecha + estilo de respuesta. Siempre presente.
+[MEM]     Hechos persistentes y estables sobre el usuario (edad, trabajo, preferencias...).
+          Cross-conversación. Solo si hay alguno.
+[STATE]   Estado compacto de ESTA conversación (tema, entidades, decisiones, tareas
+          pendientes, referentes de pronombres). Solo si ya se generó alguno.
+[RECENT]  Últimos turnos literales de esta conversación. Solo si hay mensajes previos.
+[USER]    El mensaje actual, siempre al final.
+```
 
-Además, `MEMORY_MAX_DISTANCE` (en `.env`, sin definir por defecto) descarta recuerdos poco relevantes para la pregunta actual en vez de inyectar siempre los `MEMORY_RESULTS` más cercanos aunque no vengan al caso. ChromaDB devuelve una distancia por cada recuerdo candidato (más bajo = más relevante); `search_memory()` la usa para filtrar. El log (`Memory candidate distances for user ...`) muestra esos valores reales en cada mensaje, para que calibres el umbral con datos de tu propio uso en vez de un número arbitrario.
+**[MEM] — memoria persistente estructurada.** No usa búsqueda semántica ni embeddings: se guardan solo hechos cortos y explícitos que el usuario dice sobre sí mismo (tabla `user_facts`), nunca afirmaciones del asistente. Esto es importante porque una respuesta del modelo puede ser errónea (alucinación) — si se guardara como "recuerdo" y se reinyectara más tarde, el error se propagaría y se reforzaría con el tiempo. Al extraerse solo de los mensajes del usuario, eso no puede pasar. Como en un uso personal el número de hechos estables se mantiene pequeño, se incluyen siempre todos, sin necesidad de filtrar por relevancia.
 
-### Resumen progresivo
+**[STATE] — resumen progresivo de la conversación**, no un histórico completo. Cuando se acumulan `SUMMARY_BATCH_SIZE` (6) mensajes que ya salieron de la ventana `[RECENT]` sin condensar, `maybe_update_state_and_facts()` le pide al modelo, en una sola llamada, que (a) actualice el `[STATE]` con tema/entidades/decisiones/pendientes/referentes — instruyéndole explícitamente a reflejar correcciones del usuario en vez de las afirmaciones originales del asistente si hubo un error — y (b) extraiga hechos nuevos para `[MEM]` a partir únicamente de lo que dijo el usuario. Esto añade una llamada extra a Ollama, pero solo cada 6 mensajes (no en cada uno) y **después** de responderte, sin añadir espera a la respuesta que recibes.
 
-`HISTORY_MESSAGES` solo mantiene en crudo los últimos turnos de la conversación — pero en vez de simplemente descartar lo anterior, se va condensando en un resumen. Cuando se acumulan `SUMMARY_BATCH_SIZE` (6) mensajes que ya han salido de esa ventana reciente y aún no están resumidos, `maybe_update_summary()` le pide al propio modelo que los condense (integrando el resumen previo si lo había) y lo guarda en `conversations.summary`. Ese resumen se incluye en el prompt junto al historial reciente, en vez de la conversación completa en crudo.
+**[RECENT] — ventana dinámica**, no fija: por defecto `DEFAULT_WINDOW` (4 mensajes / 2 turnos), ya que `[STATE]` aporta la continuidad condensada y un modelo de 3B rinde peor cuanto más texto literal se le mezcla. Se amplía a `EXPANDED_WINDOW` (8) solo cuando el mensaje actual parece depender de contexto inmediato — mensajes cortos o con pronombres/referencias ("eso", "el anterior", etc.), vía `looks_referential()`, una heurística barata sin llamada extra al modelo.
 
-Esto añade una llamada extra a Ollama, pero solo cada `SUMMARY_BATCH_SIZE` mensajes (no en cada uno), y ocurre **después** de responderte, así que no añade espera a la respuesta que recibes. `SUMMARY_MAX_CHARS` (600) acota además el tamaño del resumen ya guardado al incluirlo en el prompt.
+Constantes ajustables al principio de `bot.py`: `DEFAULT_WINDOW`, `EXPANDED_WINDOW`, `HISTORY_SNIPPET_CHARS`, `STATE_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_SIZE`.
 
 ## Logs
 

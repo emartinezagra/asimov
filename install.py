@@ -27,7 +27,7 @@ MODEL_TIERS = [
     {"name": "llama3.2:1b",  "min_ram_gb": 3},
     {"name": "qwen2.5:0.5b", "min_ram_gb": 0},
 ]
-EMBED_MODEL = "nomic-embed-text"
+BENCHMARK_TIMEOUT_SECONDS = 60
 
 
 def detect_ram_gb():
@@ -95,7 +95,7 @@ def benchmark(model):
     )
     start = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=RESPONSE_BUDGET_SECONDS + 20) as resp:
+        with urllib.request.urlopen(req, timeout=BENCHMARK_TIMEOUT_SECONDS) as resp:
             resp.read()
     except Exception as e:
         print(f"  Error probando {model}: {e}")
@@ -148,7 +148,6 @@ def write_env(telegram_token, chat_model, response_style):
         f.write(f"CHAT_MODEL={chat_model}\n")
         f.write(f"RESPONSE_STYLE={response_style}\n")
         f.write("DB_PATH=./conversations.db\n")
-        f.write("MEMORY_DB_PATH=./memory_db\n")
     print(".env creado.")
 
 
@@ -202,7 +201,6 @@ def main():
     gpu = has_nvidia_gpu()
     print(f"RAM detectada: {ram_gb:.1f} GB | CPU: {cpu_cores} núcleos | GPU NVIDIA: {'sí' if gpu else 'no'}\n")
 
-    ollama_pull(EMBED_MODEL)
     chat_model = choose_chat_model(ram_gb, cpu_cores, gpu)
     print(f"\nModelo de chat elegido: {chat_model}\n")
 

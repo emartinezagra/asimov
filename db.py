@@ -27,6 +27,16 @@ def get_conn():
             timestamp TEXT
         )
     """)
+    # "summary" almacena el STATE (estado compacto de la conversación: tema,
+    # entidades, decisiones, tareas pendientes), no un resumen narrativo largo.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            fact TEXT,
+            created_at TEXT
+        )
+    """)
     # Migración para bases de datos creadas antes de añadir el resumen progresivo.
     for stmt in (
         "ALTER TABLE conversations ADD COLUMN summary TEXT",
@@ -126,3 +136,27 @@ def get_messages_range(conv_id, offset, limit):
     ).fetchall()
     conn.close()
     return rows
+
+def get_user_facts(user_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT fact FROM user_facts WHERE user_id = ? ORDER BY id ASC", (str(user_id),)
+    ).fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+def upsert_user_fact(user_id, fact):
+    fact = fact.strip()
+    if not fact:
+        return
+    conn = get_conn()
+    exists = conn.execute(
+        "SELECT 1 FROM user_facts WHERE user_id = ? AND fact = ?", (str(user_id), fact)
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            "INSERT INTO user_facts (user_id, fact, created_at) VALUES (?, ?, ?)",
+            (str(user_id), fact, datetime.now().isoformat())
+        )
+        conn.commit()
+    conn.close()

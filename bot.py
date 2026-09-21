@@ -7,12 +7,12 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-from memory import add_memory, search_memory
 from db import (
     create_conversation, list_conversations, list_known_users,
     set_title_if_missing, add_message, get_recent_messages,
     count_messages, get_conversation_summary_state,
-    update_conversation_summary, get_messages_range
+    update_conversation_summary, get_messages_range,
+    get_user_facts, upsert_user_fact
 )
 from logging_config import setup_logging
 from response_styles import RESPONSE_STYLES, DEFAULT_RESPONSE_STYLE
@@ -34,27 +34,18 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Falta TELEGRAM_TOKEN. Definilo en un archivo .env (ver .env.example).")
 
-# Límites para que el prompt enviado a Ollama no crezca sin control: cuántos
-# recuerdos/mensajes se recuperan, y cuántos caracteres de cada uno se usan.
-MEMORY_RESULTS = 3
-MEMORY_SNIPPET_CHARS = 300
-HISTORY_MESSAGES = 6
+# Ventana de turnos literales ([RECENT]): pequeña por defecto porque [STATE] ya
+# aporta continuidad condensada; se amplía solo cuando el mensaje parece depender
+# de contexto reciente (pronombres, mensajes muy cortos/elípticos).
+DEFAULT_WINDOW = 4
+EXPANDED_WINDOW = 8
 HISTORY_SNIPPET_CHARS = 300
-MEMORY_STORE_CHARS = 500  # también se recorta lo que se guarda, para que no siga creciendo
+STATE_MAX_CHARS = 400
+FACT_MAX_CHARS = 150
 
-# Resumen progresivo: los mensajes que quedan fuera de la ventana de HISTORY_MESSAGES
-# se van condensando en un resumen (guardado en conversations.summary) en vez de
-# arrastrarse en crudo para siempre. Se dispara cuando se acumulan SUMMARY_BATCH_SIZE
-# mensajes "viejos" sin resumir todavía.
+# Cada SUMMARY_BATCH_SIZE mensajes que salen de la ventana [RECENT] sin condensar
+# todavía disparan una actualización de [STATE] + extracción de hechos nuevos para [MEM].
 SUMMARY_BATCH_SIZE = 6
-SUMMARY_MAX_CHARS = 600
-
-# Si se define, descarta recuerdos cuya distancia (ChromaDB) sea mayor que este valor
-# — es decir, poco relevantes para la pregunta actual. Sin definir, se usan siempre
-# los MEMORY_RESULTS más cercanos. Mira "Memory candidate distances" en el log para
-# calibrar un valor razonable en tu caso.
-_max_distance_env = os.getenv("MEMORY_MAX_DISTANCE")
-MEMORY_MAX_DISTANCE = float(_max_distance_env) if _max_distance_env else None
 
 active_conversation = {}   # user_id -> conversation_id (en RAM, se pierde al reiniciar el bot)
 pending_reminders = {}     # simple, en RAM
@@ -62,6 +53,34 @@ pending_reminders = {}     # simple, en RAM
 def truncate(text, max_chars):
     text = text.strip()
     return text if len(text) <= max_chars else text[:max_chars].rstrip() + "…"
+
+def looks_referential(text):
+    markers = ("eso", "ese", "esa", "él", "ella", "lo anterior", "el mismo", "la misma", "eso mismo")
+    lowered = text.lower()
+    return len(text) < 40 or any(m in lowered for m in markers)
+
+# ---------- Construcción del prompt por capas: [SYS][MEM][STATE][RECENT][USER] ----------
+
+def build_prompt(user_id, conv_id, user_text):
+    fecha_actual = datetime.now().strftime("%A %d de %B de %Y, %H:%M")
+    parts = [f"[SYS]\nEres un asistente personal. Fecha: {fecha_actual}. {RESPONSE_STYLE_TEXT}"]
+
+    facts = get_user_facts(user_id)
+    if facts:
+        parts.append("[MEM]\n" + "\n".join(f"- {f}" for f in facts))
+
+    state, _ = get_conversation_summary_state(conv_id)
+    if state:
+        parts.append(f"[STATE]\n{truncate(state, STATE_MAX_CHARS)}")
+
+    window = EXPANDED_WINDOW if looks_referential(user_text) else DEFAULT_WINDOW
+    recent = get_recent_messages(conv_id, limit=window)
+    if recent:
+        recent_block = "\n".join(f"{r}: {truncate(c, HISTORY_SNIPPET_CHARS)}" for r, c in recent)
+        parts.append(f"[RECENT]\n{recent_block}")
+
+    parts.append(f"[USER]\n{user_text}")
+    return "\n\n".join(parts)
 
 # ---------- /start: elegir nueva o continuar ----------
 
@@ -116,40 +135,84 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Sending reminder to chat {job.chat_id}")
     await context.bot.send_message(chat_id=job.chat_id, text=job.data)
 
-# ---------- Resumen progresivo ----------
+# ---------- Actualización de [STATE] y extracción de hechos para [MEM] ----------
 
-async def maybe_update_summary(conv_id):
+def parse_extraction(text):
+    state = None
+    facts = []
+    mode = None
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("STATE:"):
+            state = stripped[len("STATE:"):].strip()
+            mode = "state"
+            continue
+        if stripped.upper().startswith("FACTS:"):
+            rest = stripped[len("FACTS:"):].strip()
+            mode = "facts"
+            if rest and rest.upper() != "NONE":
+                facts.append(rest.lstrip("-").strip())
+            continue
+        if mode == "facts" and stripped.startswith("-"):
+            fact = stripped.lstrip("-").strip()
+            if fact and fact.upper() != "NONE":
+                facts.append(fact)
+        elif mode == "state" and stripped:
+            state = f"{state} {stripped}" if state else stripped
+    return state, facts
+
+async def maybe_update_state_and_facts(conv_id, user_id):
     total = count_messages(conv_id)
-    existing_summary, summarized_up_to = get_conversation_summary_state(conv_id)
-    foldable = total - HISTORY_MESSAGES - summarized_up_to
+    prev_state, summarized_up_to = get_conversation_summary_state(conv_id)
+    foldable = total - DEFAULT_WINDOW - summarized_up_to
 
     if foldable < SUMMARY_BATCH_SIZE:
         return
 
-    to_fold = get_messages_range(conv_id, offset=summarized_up_to, limit=foldable)
-    transcript = "\n".join(f"{r}: {c}" for r, c in to_fold)
+    batch = get_messages_range(conv_id, offset=summarized_up_to, limit=foldable)
+    transcript = "\n".join(f"{r}: {c}" for r, c in batch)
 
-    summary_prompt = f"""Condensa en pocas frases, en tercera persona, lo esencial de este fragmento \
-de conversación entre un usuario y un asistente. Si hay un resumen previo, intégralo sin repetirlo.
+    extraction_prompt = f"""A partir del ESTADO PREVIO y estos turnos, genera dos cosas.
 
-Resumen previo: {existing_summary or "(ninguno)"}
+STATE: una línea compacta con el tema, entidades mencionadas, decisiones tomadas y tareas \
+pendientes de esta conversación, y cualquier referente necesario para entender pronombres \
+futuros como "eso" o "el anterior". Si el usuario corrigió una afirmación del asistente, \
+refleja la corrección, no la afirmación original. No incluyas saludos, cortesías ni texto repetido.
 
-Fragmento a condensar:
+FACTS: hechos estables que el USUARIO haya dicho sobre sí mismo (edad, trabajo, preferencias, \
+objetivos). Ignora cualquier frase dicha por el asistente. Un hecho por línea, empezando con "-". \
+Si no hay ninguno, escribe NONE.
+
+ESTADO PREVIO: {prev_state or "(ninguno)"}
+
+TURNOS:
 {transcript}
 
-Resumen actualizado (máximo 5-6 frases):"""
+Responde exactamente en este formato:
+STATE: <una línea>
+FACTS:
+- <hecho 1>
+- <hecho 2>
+(o FACTS: NONE si no hay ninguno)"""
 
     try:
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-            "model": CHAT_MODEL, "prompt": summary_prompt, "stream": False,
+            "model": CHAT_MODEL, "prompt": extraction_prompt, "stream": False,
             "keep_alive": OLLAMA_KEEP_ALIVE
         })
         resp.raise_for_status()
-        new_summary = resp.json()["response"].strip()
-        update_conversation_summary(conv_id, new_summary, summarized_up_to + foldable)
-        logger.info(f"Updated summary for conversation {conv_id} (folded {foldable} messages)")
+        new_state, new_facts = parse_extraction(resp.json()["response"])
+
+        update_conversation_summary(conv_id, new_state or prev_state, summarized_up_to + foldable)
+        for fact in new_facts:
+            upsert_user_fact(user_id, truncate(fact, FACT_MAX_CHARS))
+
+        logger.info(
+            f"Updated state for conversation {conv_id} "
+            f"(folded {foldable} messages, {len(new_facts)} new facts)"
+        )
     except Exception:
-        logger.error(f"Failed to update summary for conversation {conv_id}", exc_info=True)
+        logger.error(f"Failed to update state/facts for conversation {conv_id}", exc_info=True)
 
 # ---------- Mensajes normales ----------
 
@@ -176,38 +239,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Vale, te lo recuerdo en 2 minutos.")
         return
 
-    # Memoria semántica (RAG) — busca en TODO el historial del usuario, no solo esta conversación,
-    # y descarta los recuerdos cuya distancia supere MEMORY_MAX_DISTANCE (si está configurado)
-    relevant = search_memory(user_id, user_text, k=MEMORY_RESULTS, max_distance=MEMORY_MAX_DISTANCE)
-    memory_block = "\n".join(truncate(m, MEMORY_SNIPPET_CHARS) for m in relevant) \
-        if relevant else "Sin recuerdos relevantes."
-
-    # Ventana reciente — solo los últimos turnos de ESTA conversación (acotado, no crece sin límite)
-    recent = get_recent_messages(conv_id, limit=HISTORY_MESSAGES)
-    history_block = "\n".join(f"{r}: {truncate(c, HISTORY_SNIPPET_CHARS)}" for r, c in recent) \
-        if recent else "Inicio de la conversación."
-
-    # Resumen progresivo de lo que ya quedó fuera de la ventana reciente
-    conv_summary, _ = get_conversation_summary_state(conv_id)
-    summary_block = truncate(conv_summary, SUMMARY_MAX_CHARS) if conv_summary else "Sin resumen todavía."
-
-    fecha_actual = datetime.now().strftime("%A %d de %B de %Y, %H:%M")
-
-    prompt = f"""Eres un asistente personal. Hoy es {fecha_actual}.
-
-Recuerdos relevantes de conversaciones pasadas (puede que no todos apliquen):
-{memory_block}
-
-Resumen de lo hablado anteriormente en esta conversación (antes de la ventana reciente):
-{summary_block}
-
-Conversación reciente (esto es lo más importante para el contexto inmediato):
-{history_block}
-
-Mensaje actual del usuario: {user_text}
-
-{RESPONSE_STYLE_TEXT} Usa el contexto reciente antes que los recuerdos antiguos si hay conflicto."""
-
+    prompt = build_prompt(user_id, conv_id, user_text)
     logger.debug(f"Prompt sent to Ollama ({len(prompt)} chars) for conversation {conv_id}:\n{prompt}")
 
     try:
@@ -236,13 +268,11 @@ Mensaje actual del usuario: {user_text}
     set_title_if_missing(conv_id, user_text)
     add_message(conv_id, "Usuario", user_text)
     add_message(conv_id, "Tú", answer)
-    add_memory(user_id, f"Usuario dijo: {truncate(user_text, MEMORY_STORE_CHARS)}")
-    add_memory(user_id, f"Tú respondiste: {truncate(answer, MEMORY_STORE_CHARS)}")
 
     logger.info(f"Replied to user {user_id} in conversation {conv_id}")
     await update.message.reply_text(answer)
 
-    await maybe_update_summary(conv_id)
+    await maybe_update_state_and_facts(conv_id, user_id)
 
 # ---------- Arranque ----------
 
