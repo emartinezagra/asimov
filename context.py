@@ -6,6 +6,7 @@ from datetime import datetime
 
 import llm
 import db
+from tools import memory as memory_tool
 from response_styles import RESPONSE_STYLES, DEFAULT_RESPONSE_STYLE
 from datetime_utils import current_datetime_label
 import os
@@ -49,8 +50,20 @@ CANCEL_EVENT(title)
 LIST_EVENTS()
 EMAIL_DRAFT(to, subject, body, missing?)
 SEND_EMAIL()
+NOTE(content)
+SEARCH_NOTES(query)
+LIST_NOTES()
+DELETE_NOTE(text)
+TASK(title, due_at?)
+COMPLETE_TASK(title)
+CANCEL_TASK(title)
+LIST_TASKS()
+REMEMBER(fact)
+FORGET(text)
+LIST_MEMORY()
 
-Usa "missing" (lista de campos que faltan) si no tienes toda la información necesaria para REMINDER, CALENDAR o EMAIL_DRAFT. No inventes fechas, horas ni destinatarios: si no los tienes, decláralos en "missing"."""
+Usa "missing" (lista de campos que faltan) si no tienes toda la información necesaria para REMINDER, CALENDAR o EMAIL_DRAFT. No inventes fechas, horas ni destinatarios: si no los tienes, decláralos en "missing".
+REMEMBER es solo para hechos duraderos que el usuario pide explícitamente recordar (preferencias, datos personales, proyectos); nunca para contraseñas, tokens ni datos bancarios."""
 
 
 def truncate(text, max_chars):
@@ -254,6 +267,8 @@ información específica de esta conversación (por ejemplo "hoy busco ofertas d
 de esta conversación, no un hecho permanente; eso va en PENDING o TOPIC, no en FACTS).
 - No conviertas acciones ejecutadas (recordatorios, eventos, correos) en hechos permanentes: son \
 contexto de esta conversación, no preferencias del usuario.
+- Nunca guardes en FACTS contraseñas, tokens, claves de API ni datos bancarios, aunque el usuario \
+los mencione explícitamente.
 
 ESTADO PREVIO:
 {format_state(prev_state) if prev_state else "(ninguno)"}
@@ -272,7 +287,7 @@ TURNOS:
 
         db.update_conversation_state(conv_id, merged_state, to_turn)
         for fact in new_facts:
-            db.upsert_user_fact(user_id, truncate(fact, FACT_MAX_CHARS))
+            memory_tool.remember(user_id, truncate(fact, FACT_MAX_CHARS))
 
         logger.info(
             f"Updated state for conversation {conv_id} "

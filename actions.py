@@ -8,6 +8,9 @@ import datetime_utils as dtu
 from tools import reminders as reminders_tool
 from tools import calendar as calendar_tool
 from tools import email as email_tool
+from tools import notes as notes_tool
+from tools import tasks as tasks_tool
+from tools import memory as memory_tool
 
 logger = logging.getLogger("asimov")
 
@@ -15,6 +18,9 @@ ALLOWED_ACTIONS = {
     "CHAT", "REMINDER", "CANCEL_REMINDER", "LIST_REMINDERS",
     "CALENDAR", "CANCEL_EVENT", "LIST_EVENTS",
     "EMAIL_DRAFT", "SEND_EMAIL",
+    "NOTE", "SEARCH_NOTES", "LIST_NOTES", "DELETE_NOTE",
+    "TASK", "COMPLETE_TASK", "CANCEL_TASK", "LIST_TASKS",
+    "REMEMBER", "FORGET", "LIST_MEMORY",
 }
 
 FALLBACK_MESSAGE = "No te he entendido bien. ¿Puedes reformularlo?"
@@ -130,12 +136,77 @@ def validate_email_draft(raw):
     }, missing
 
 
+def validate_note(raw):
+    content = raw.get("content")
+    if not (isinstance(content, str) and content.strip()):
+        return {}, ["content"]
+    return {"content": content.strip()}, []
+
+
+def validate_search_notes(raw):
+    query = raw.get("query")
+    if not (isinstance(query, str) and query.strip()):
+        return {}, ["query"]
+    return {"query": query.strip()}, []
+
+
+def validate_delete_note(raw):
+    text = raw.get("text")
+    if not (isinstance(text, str) and text.strip()):
+        return {}, ["text"]
+    return {"text": text.strip()}, []
+
+
+def validate_task(raw):
+    missing = []
+    title = raw.get("title")
+    if not (isinstance(title, str) and title.strip()):
+        missing.append("title")
+        title = None
+
+    # due_at is optional for a task — an invalid/missing date just means no
+    # due date, it never blocks creating the task itself.
+    due_at = dtu.validate_absolute_datetime(raw.get("due_at")) if raw.get("due_at") else None
+
+    return {"title": title.strip() if title else None, "due_at": due_at}, missing
+
+
+def validate_task_title(raw):
+    """Shared by COMPLETE_TASK and CANCEL_TASK — both only need a title fragment."""
+    title = raw.get("title")
+    if not (isinstance(title, str) and title.strip()):
+        return {}, ["title"]
+    return {"title": title.strip()}, []
+
+
+def validate_remember(raw):
+    fact = raw.get("fact")
+    if not (isinstance(fact, str) and fact.strip()):
+        return {}, ["fact"]
+    return {"fact": fact.strip()}, []
+
+
+def validate_forget(raw):
+    text = raw.get("text")
+    if not (isinstance(text, str) and text.strip()):
+        return {}, ["text"]
+    return {"text": text.strip()}, []
+
+
 VALIDATORS = {
     "REMINDER": validate_reminder,
     "CANCEL_REMINDER": validate_cancel_reminder,
     "CALENDAR": validate_calendar,
     "CANCEL_EVENT": validate_cancel_event,
     "EMAIL_DRAFT": validate_email_draft,
+    "NOTE": validate_note,
+    "SEARCH_NOTES": validate_search_notes,
+    "DELETE_NOTE": validate_delete_note,
+    "TASK": validate_task,
+    "COMPLETE_TASK": validate_task_title,
+    "CANCEL_TASK": validate_task_title,
+    "REMEMBER": validate_remember,
+    "FORGET": validate_forget,
 }
 
 # ---------- Missing-field questions (templated in Python, no extra LLM call) ----------
@@ -148,6 +219,14 @@ MISSING_FIELD_QUESTIONS = {
     ("CALENDAR", "start"): "¿Para qué día y hora?",
     ("CANCEL_EVENT", "title"): "¿Qué evento quieres cancelar?",
     ("EMAIL_DRAFT", "body"): "¿Qué quieres decirle?",
+    ("NOTE", "content"): "¿Qué quieres que apunte?",
+    ("SEARCH_NOTES", "query"): "¿Qué buscas en tus notas?",
+    ("DELETE_NOTE", "text"): "¿Qué nota quieres borrar?",
+    ("TASK", "title"): "¿Qué tarea quieres añadir?",
+    ("COMPLETE_TASK", "title"): "¿Qué tarea quieres marcar como hecha?",
+    ("CANCEL_TASK", "title"): "¿Qué tarea quieres eliminar?",
+    ("REMEMBER", "fact"): "¿Qué quieres que recuerde?",
+    ("FORGET", "text"): "¿Qué quieres que olvide?",
 }
 
 def missing_field_question(action, missing_fields, params):
@@ -217,6 +296,82 @@ def run_action(action, params, user_id, conv_id):
 
     if action == "SEND_EMAIL":
         return "No hay ningún borrador de correo listo para enviar. Pídeme primero que lo prepare."
+
+    if action == "NOTE":
+        result = notes_tool.create(user_id, params["content"])
+        return f"Apuntado: {result['content']}"
+
+    if action == "SEARCH_NOTES":
+        items = notes_tool.search(user_id, params["query"])
+        if not items:
+            return "No he encontrado notas sobre eso."
+        return "Notas encontradas:\n" + "\n".join(f"- {i['content']}" for i in items)
+
+    if action == "LIST_NOTES":
+        items = notes_tool.list_all(user_id)
+        if not items:
+            return "No tienes notas guardadas."
+        return "Tus notas:\n" + "\n".join(f"- {i['content']}" for i in items)
+
+    if action == "DELETE_NOTE":
+        result = notes_tool.delete(user_id, params["text"])
+        if result["status"] == "deleted":
+            return f"Nota eliminada: {result['content']}"
+        if result["status"] == "ambiguous":
+            return f"Tienes varias notas que coinciden: {'; '.join(result['matches'])}. ¿Cuál exactamente?"
+        return "No he encontrado ninguna nota con ese texto."
+
+    if action == "TASK":
+        result = tasks_tool.create(user_id, params["title"], params["due_at"])
+        if result["due_at"]:
+            return f"Hecho. He añadido \"{result['title']}\" a tus tareas, para {dtu.human_time(result['due_at'])}. 📋"
+        return f"Hecho. He añadido \"{result['title']}\" a tus tareas. 📋"
+
+    if action == "COMPLETE_TASK":
+        result = tasks_tool.complete(user_id, params["title"])
+        if result["status"] == "completed":
+            return f"Tarea completada: {result['title']}."
+        if result["status"] == "ambiguous":
+            return f"Tienes varias tareas que coinciden: {'; '.join(result['matches'])}. ¿Cuál exactamente?"
+        return "No he encontrado ninguna tarea pendiente con ese texto."
+
+    if action == "CANCEL_TASK":
+        result = tasks_tool.cancel(user_id, params["title"])
+        if result["status"] == "cancelled":
+            return f"Tarea eliminada: {result['title']}."
+        if result["status"] == "ambiguous":
+            return f"Tienes varias tareas que coinciden: {'; '.join(result['matches'])}. ¿Cuál exactamente?"
+        return "No he encontrado ninguna tarea con ese texto."
+
+    if action == "LIST_TASKS":
+        items = tasks_tool.list_pending(user_id)
+        if not items:
+            return "No tienes tareas pendientes."
+        lines = []
+        for i in items:
+            suffix = f" (para {dtu.human_time(i['due_at'])})" if i["due_at"] else ""
+            lines.append(f"- {i['title']}{suffix}")
+        return "Tus tareas pendientes:\n" + "\n".join(lines)
+
+    if action == "REMEMBER":
+        result = memory_tool.remember(user_id, params["fact"])
+        if result["status"] == "refused_sensitive":
+            return "Prefiero no guardar ese tipo de información (contraseñas, claves o datos sensibles)."
+        return "Lo recordaré. 🧠"
+
+    if action == "FORGET":
+        result = memory_tool.forget(user_id, params["text"])
+        if result["status"] == "deleted":
+            return f"Olvidado: {result['fact']}."
+        if result["status"] == "ambiguous":
+            return f"Tengo varias cosas que coinciden: {'; '.join(result['matches'])}. ¿Cuál exactamente?"
+        return "No tengo guardado nada parecido a eso."
+
+    if action == "LIST_MEMORY":
+        facts = memory_tool.list_all(user_id)
+        if not facts:
+            return "Todavía no tengo nada guardado sobre ti."
+        return "Esto es lo que recuerdo de ti:\n" + "\n".join(f"- {f}" for f in facts)
 
     return FALLBACK_MESSAGE
 

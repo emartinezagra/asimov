@@ -107,6 +107,27 @@ def get_conn():
             created_at TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            content TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            title TEXT,
+            description TEXT,
+            status TEXT DEFAULT 'pending',
+            due_at TEXT,
+            created_at TEXT,
+            completed_at TEXT
+        )
+    """)
 
     return conn
 
@@ -388,4 +409,103 @@ def upsert_user_fact(user_id, fact):
             (str(user_id), fact, datetime.now().isoformat())
         )
         conn.commit()
+    conn.close()
+
+def find_user_facts_by_text(user_id, text_fragment):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, fact FROM user_facts WHERE user_id = ? AND lower(fact) LIKE ?",
+        (str(user_id), f"%{text_fragment.lower()}%")
+    ).fetchall()
+    conn.close()
+    return rows
+
+def delete_user_fact(fact_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM user_facts WHERE id = ?", (fact_id,))
+    conn.commit()
+    conn.close()
+
+# ---------- Notes ----------
+
+def create_note(user_id, content):
+    conn = get_conn()
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "INSERT INTO notes (user_id, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (str(user_id), content, now, now)
+    )
+    conn.commit()
+    note_id = cur.lastrowid
+    conn.close()
+    return note_id
+
+def list_notes(user_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, content FROM notes WHERE user_id = ? ORDER BY id DESC", (str(user_id),)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def search_notes(user_id, query):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, content FROM notes WHERE user_id = ? AND lower(content) LIKE ? ORDER BY id DESC",
+        (str(user_id), f"%{query.lower()}%")
+    ).fetchall()
+    conn.close()
+    return rows
+
+def delete_note(note_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+    conn.commit()
+    conn.close()
+
+# ---------- Tasks ----------
+
+def create_task(user_id, title, due_at_iso):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO tasks (user_id, title, status, due_at, created_at) VALUES (?, ?, 'pending', ?, ?)",
+        (str(user_id), title, due_at_iso, datetime.now().isoformat())
+    )
+    conn.commit()
+    task_id = cur.lastrowid
+    conn.close()
+    return task_id
+
+def list_pending_tasks(user_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title, due_at FROM tasks WHERE user_id = ? AND status = 'pending' "
+        "ORDER BY (due_at IS NULL), due_at ASC",
+        (str(user_id),)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def find_pending_tasks_by_title(user_id, title_fragment):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title FROM tasks WHERE user_id = ? AND status = 'pending' AND lower(title) LIKE ?",
+        (str(user_id), f"%{title_fragment.lower()}%")
+    ).fetchall()
+    conn.close()
+    return rows
+
+def complete_task(task_id):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ?",
+        (datetime.now().isoformat(), task_id)
+    )
+    conn.commit()
+    conn.close()
+
+def cancel_task(task_id):
+    conn = get_conn()
+    conn.execute("UPDATE tasks SET status = 'cancelled' WHERE id = ?", (task_id,))
+    conn.commit()
     conn.close()

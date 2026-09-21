@@ -162,11 +162,11 @@ Tunable constants at the top of `context.py`: `DEFAULT_WINDOW_TURNS`, `EXPANDED_
 
 **Known limitation, by design:** references to a sub-part of a compound question (e.g. *"¿cuál era la segunda cosa que te pedí?"*, when a single prior turn asked for two things) aren't resolved by turn lookup — that level of detail is expected to live in `[STATE].pending` instead, captured when that turn gets folded. Going further (parsing sub-requests within a turn) was left out on purpose to avoid over-engineering a local, single-user assistant.
 
-## Actions: reminders, calendar, email
+## Actions: reminders, notes, tasks, calendar, email, memory
 
-Asimov can do more than chat: it can create/cancel/list reminders, create/cancel/list calendar events, and draft/send emails, all triggered by natural language. Examples: *"Recuérdame sacar el pollo del horno en 10 minutos"*, *"¿Qué recordatorios tengo?"*, *"Pon una reunión con Juan el jueves a las 11 durante una hora"*, *"Escribe un correo a Juan diciéndole que llegaré tarde"* → *"Envíalo"*.
+Asimov can do more than chat: reminders, personal notes, a task list, calendar events, and drafting/sending emails, all triggered by natural language. Examples: *"Recuérdame sacar el pollo del horno en 10 minutos"*, *"Apunta que dejé las llaves en el cajón"*, *"Añade comprar leche a mis tareas"*, *"Pon una reunión con Juan el jueves a las 11"*, *"Escribe un correo a Juan diciéndole que llegaré tarde"* → *"Envíalo"*, *"Recuerda que prefiero Python"*, *"¿Qué recuerdas de mí?"*.
 
-**The core rule: the LLM never executes anything.** Every user message goes through exactly one Ollama call (`context.build_action_prompt()` + `llm.generate(..., json_mode=True)`) that asks the model to output a single, strict JSON object choosing one action (`CHAT`, `REMINDER`, `CANCEL_REMINDER`, `LIST_REMINDERS`, `CALENDAR`, `CANCEL_EVENT`, `LIST_EVENTS`, `EMAIL_DRAFT`, `SEND_EMAIL`) with its parameters — never code, never a tool call the model runs itself. Ollama's `format: "json"` mode constrains the output at generation time, and `actions.parse_action_json()` still never trusts it blindly: invalid JSON or an unrecognized action always falls back to plain `CHAT` with a generic message instead of breaking the conversation.
+**The core rule: the LLM never executes anything.** Every user message goes through exactly one Ollama call (`context.build_action_prompt()` + `llm.generate(..., json_mode=True)`) that asks the model to output a single, strict JSON object choosing one action (`CHAT`, the reminder/note/task/calendar/email actions, or `REMEMBER`/`FORGET`/`LIST_MEMORY` — see `TOOLS_BLOCK` in `context.py` for the full, compact list) with its parameters — never code, never a tool call the model runs itself. Ollama's `format: "json"` mode constrains the output at generation time, and `actions.parse_action_json()` still never trusts it blindly: invalid JSON or an unrecognized action always falls back to plain `CHAT` with a generic message instead of breaking the conversation.
 
 ```
 USER MESSAGE
@@ -197,7 +197,17 @@ the model's own "missing" list is never the only check
 
 **Calendar is local-only for now**, deliberately: `tools/calendar.py` is the single seam the rest of the app talks to, backed today by the `calendar_events` SQLite table. Wiring it to Google Calendar or Outlook later means changing only that one file.
 
+**Notes and tasks** (`tools/notes.py`, `tools/tasks.py`) follow the same pattern as reminders/events: plain SQLite tables (`notes`, `tasks`), substring search/matching for `SEARCH_NOTES`/`DELETE_NOTE`/`COMPLETE_TASK`/`CANCEL_TASK` (ambiguous matches are reported back instead of guessed at), and a task's due date is optional — an invalid or missing one just means "no due date," it never blocks creating the task.
+
+**Memory is transversal, not just another tool.** `[MEM]` is already injected into *every* prompt automatically, and facts get extracted passively every few turns by `context.maybe_update_state_and_facts()` regardless of what actions happen — that part doesn't change. `REMEMBER`/`FORGET`/`LIST_MEMORY` are simply a second, user-controlled entry point into the *same* `user_facts` store, for explicit control ("recuerda que...", "olvida que...", "¿qué recuerdas de mí?"). Both entry points — passive extraction and explicit commands — go through `tools/memory.py`, which is the single place that decides what's allowed to become a memory:
+
+- **Never guessed from the assistant's own words.** Facts are only ever extracted from what the *user* said (structurally true for passive extraction, since only user turns are fed to it; and true by construction for `REMEMBER`, since it's the user's own message). A hallucinated assistant claim can't become a stored "fact."
+- **Sensitive data is refused, not stored.** `tools/memory.is_sensitive()` pattern-matches for passwords, tokens, API keys, PINs, card/account numbers, etc., and refuses to save a match — checked on *both* entry points, plus the extraction prompt itself is separately instructed never to put that kind of thing in `FACTS`. Defense in depth: an instruction a 3B model might ignore, backed by a code-level check that can't be talked out of it.
+- **Deletable.** `FORGET` reuses the same ambiguous/not-found matching pattern as cancelling a reminder or event.
+
 **Adding a new tool** means: write `tools/<name>.py` with plain functions that talk to `db.py` (or an external API), add its action(s) to `ALLOWED_ACTIONS` and `TOOLS_BLOCK` in `context.py`, add a validator to `VALIDATORS` in `actions.py`, and a branch in `run_action()`. No changes needed anywhere else.
+
+**Not implemented yet:** `WEB_SEARCH` and `WEATHER` need a real external API (and a key) to avoid inventing results — they're not wired in until a provider is chosen. Chaining multiple actions from one message (e.g. "add it to the calendar and remind me an hour before") is intentionally deferred too, per the project's own phased plan — today each message resolves to exactly one action.
 
 ## Logs
 
