@@ -113,25 +113,32 @@ python configure.py
 
 ## Context architecture
 
-Each message is built in layers (`build_prompt()` in `bot.py`), and **an empty layer is omitted entirely** from the prompt instead of being shown as "no data":
+Conversations are stored as **numbered turns** (one shared `turn_number` per Usuario/Tú pair in `messages`), which lets the system resolve references deterministically instead of asking the model to count. Each message is built in layers (`build_prompt()` in `bot.py`), and **an empty layer is omitted entirely** from the prompt instead of being shown as "no data":
 
 ```
-[SYS]     Fixed instructions: date + response style. Always present.
-[MEM]     Persistent, stable facts about the user (age, job, preferences...).
-          Cross-conversation. Only if there are any.
-[STATE]   Compact state of THIS conversation (topic, entities, decisions,
-          pending tasks, pronoun referents). Only once one has been generated.
-[RECENT]  Last literal turns of this conversation. Only if there are prior messages.
-[USER]    The current message, always last.
+[SYS]        Fixed instructions: date + response style. Always present.
+[MEM]        Persistent, stable facts about the user (job, preferences, long-term
+             goals...). Cross-conversation. Only if there are any.
+[STATE]      Compact state of THIS conversation, as four fixed fields (topic,
+             goal, pending, note). Only the non-empty fields are shown.
+[REFERENCE]  The exact turn a reference like "2 questions ago" resolved to.
+             Only when resolve_reference() matched something.
+[RECENT]     Last literal turns, tagged with how many questions ago each is.
+             Only if there are prior turns.
+[USER]       The current message, always last.
 ```
 
-**[MEM] — structured persistent memory.** No semantic search or embeddings: it only stores short, explicit facts the user states about themselves (`user_facts` table), never assistant claims. This matters because a model response can be wrong (a hallucination) — if it were stored as a "memory" and re-injected later, the error would propagate and reinforce itself over time. Since it's only ever extracted from the user's own messages, that can't happen. Since a personal-use fact count stays small, all of them are always included, no relevance filtering needed.
+**Deterministic reference resolution — before the model ever sees the message.** `resolve_reference()` runs a set of accent-insensitive regex patterns against the user's message (`"hace N preguntas"`, `"la primera pregunta"`, `"qué te pregunté antes"`, etc.) and, if one matches, computes the exact `turn_number` it refers to and fetches that turn directly from the database — no LLM call, no counting, zero added latency. The result is injected as its own `[REFERENCE]` layer, so a question like *"¿qué te pregunté hace dos preguntas?"* gets the exact right turn handed to the model instead of relying on it to count alternating lines (which a 3B model does unreliably). If no pattern matches but the message still looks context-dependent (short, or with pronouns like "eso"), `[RECENT]` widens instead, as a fallback.
 
-**[STATE] — progressive conversation summary**, not a full transcript. When `SUMMARY_BATCH_SIZE` (6) messages that already fell out of the `[RECENT]` window pile up unfolded, `maybe_update_state_and_facts()` asks the model, in a single call, to (a) update `[STATE]` with topic/entities/decisions/pending items/referents — explicitly instructed to record the user's corrections instead of the assistant's original (possibly wrong) claims — and (b) extract new facts for `[MEM]` from what the user said only. This adds one extra Ollama call, but only every 6 messages (not every one), and it runs **after** replying to you, so it doesn't add latency to the response you receive.
+**[MEM] — structured persistent memory.** No semantic search or embeddings: it only stores short, explicit, *durable* facts the user states about themselves (`user_facts` table) — never assistant claims, and never session-specific context (e.g. "soy desarrollador web" qualifies, "hoy busco ofertas de Python" doesn't — that belongs in `[STATE]`). Since a model response can be wrong (a hallucination), and facts are only ever extracted from the user's own messages, an assistant error can never become a stored "fact" that contaminates future prompts.
 
-**[RECENT] — dynamic window**, not fixed: `DEFAULT_WINDOW` (4 messages / 2 turns) by default, since `[STATE]` already carries the condensed continuity and a 3B model performs worse the more literal text gets mixed in. It expands to `EXPANDED_WINDOW` (8) only when the current message looks like it depends on immediate context — short messages or ones with pronouns/references ("that", "the previous one", etc.) via `looks_referential()`, a cheap heuristic with no extra model call.
+**[STATE] — four fixed fields, not free prose.** `TOPIC` / `GOAL` / `PENDING` / `NOTE`, extracted together with new `[MEM]` facts in a single Ollama call (`maybe_update_state_and_facts()`), triggered every `SUMMARY_BATCH_TURNS` (3) turns that fall out of the `[RECENT]` window unfolded, and run **after** replying so it never adds latency to what you receive. The extraction prompt explicitly forbids copying the assistant's own prior wording, and `NOTE` is specifically meant to record the user's *corrections* instead of the assistant's original (possibly wrong) claim. As a second safety net, `merge_state()` rejects any field that comes back implausibly long (`FIELD_SANITY_MAX_CHARS`, 220 chars) — a strong signal the model copy-pasted prose instead of synthesizing state — and keeps the previous value rather than accepting it.
 
-Tunable constants at the top of `bot.py`: `DEFAULT_WINDOW`, `EXPANDED_WINDOW`, `HISTORY_SNIPPET_CHARS`, `STATE_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_SIZE`.
+**[RECENT] — dynamic window, turn-tagged.** `DEFAULT_WINDOW_TURNS` (2 turns) by default, expanding to `EXPANDED_WINDOW_TURNS` (4) only as a fallback when no explicit reference resolved but the message still looks context-dependent. Each turn is tagged `[hace N preguntas]` so counting isn't left to the model even within the raw window.
+
+Tunable constants at the top of `bot.py`: `DEFAULT_WINDOW_TURNS`, `EXPANDED_WINDOW_TURNS`, `HISTORY_SNIPPET_CHARS`, `STATE_FIELD_MAX_CHARS`, `FIELD_SANITY_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_TURNS`.
+
+**Known limitation, by design:** references to a sub-part of a compound question (e.g. *"¿cuál era la segunda cosa que te pedí?"*, when a single prior turn asked for two things) aren't resolved by turn lookup — that level of detail is expected to live in `[STATE].pending` instead, captured when that turn gets folded. Going further (parsing sub-requests within a turn) was left out on purpose to avoid over-engineering a local, single-user assistant.
 
 ## Logs
 
