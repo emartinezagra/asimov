@@ -36,7 +36,10 @@ def parse_action_json(raw_text):
     """Parses and whitelists the model's raw output. Never trusted blindly:
     invalid JSON or an unknown action always falls back to plain CHAT, so a
     malformed response can never be confused with — or block — a real action."""
+    logger.debug(f"Raw action JSON from model: {raw_text!r}")
+
     if not raw_text:
+        logger.error("Empty response from model, falling back to CHAT")
         return {"action": "CHAT", "message": FALLBACK_MESSAGE}
     try:
         data = json.loads(raw_text)
@@ -48,6 +51,10 @@ def parse_action_json(raw_text):
 
     if not isinstance(data, dict) or data.get("action") not in ALLOWED_ACTIONS:
         logger.error(f"Unknown/missing action from model, falling back to CHAT: {data!r}")
+        return {"action": "CHAT", "message": FALLBACK_MESSAGE}
+
+    if data.get("action") == "CHAT" and not (isinstance(data.get("message"), str) and data["message"].strip()):
+        logger.error(f"CHAT action with no usable message from model, falling back: {data!r}")
         return {"action": "CHAT", "message": FALLBACK_MESSAGE}
 
     return data
