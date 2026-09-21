@@ -13,6 +13,10 @@ TITLE_MAX_CHARS = 120
 SNIPPET_MAX_CHARS = 200
 DEFAULT_TIMEOUT = 10
 DEFAULT_RETRIES = 1  # one small retry on failure, never unbounded
+# Always include news engines alongside general ones: it helps queries about
+# current events/headlines without hurting other queries (they just add more
+# candidate results into the same ranking).
+DEFAULT_CATEGORIES = "general,news"
 
 
 class SearchError(Exception):
@@ -43,7 +47,7 @@ class SearchService:
             try:
                 resp = requests.get(
                     f"{self.base_url}/search",
-                    params={"q": query, "format": "json"},
+                    params={"q": query, "format": "json", "categories": DEFAULT_CATEGORIES},
                     timeout=self.timeout,
                 )
                 resp.raise_for_status()
