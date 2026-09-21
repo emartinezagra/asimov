@@ -59,7 +59,7 @@ Variables available in `.env`:
 | `CONTACTS` | `Name:email` pairs, comma-separated, so emails can be sent by first name | (empty) |
 | `EMAIL_SMTP_HOST` / `EMAIL_SMTP_PORT` / `EMAIL_USER` / `EMAIL_PASSWORD` / `EMAIL_FROM` | SMTP credentials for sending email. Leave `EMAIL_SMTP_HOST` empty to disable sending | (empty) |
 | `DEFAULT_LOCATION` | City used for weather questions that don't name one | (empty) |
-| `SEARXNG_URL` | Base URL of a [SearXNG](https://docs.searxng.org/) instance for `WEB_SEARCH`. Leave empty to disable web search | (empty) |
+| `SEARXNG_URL` | Base URL of a [SearXNG](https://docs.searxng.org/) instance for `WEB_SEARCH` — set automatically by `configure.py`, see below. Leave empty to disable web search | (empty) |
 
 `.env` is **not** pushed to the repo (it's in `.gitignore`) — each person uses their own token.
 
@@ -119,7 +119,7 @@ python configure.py
 1. **Response style** — as above.
 2. **Timezone** — the IANA timezone (e.g. `Europe/Madrid`) used to resolve reminder/calendar dates; validated against Python's `zoneinfo` before saving, so a typo can't silently break date resolution.
 3. **Email (contacts + SMTP)** — add `name:email` contacts one at a time (existing ones are shown and can be overwritten), and set the SMTP host/port/user/password/from address needed to actually send emails. The password prompt hides your input (`getpass`) and is never echoed or logged.
-4. **Default location + web search** — the city used for weather questions that don't name one, and the `SearXNG` instance URL for `WEB_SEARCH`.
+4. **Default location + web search** — the city used for weather questions that don't name one, and automatic detection/installation of a local SearXNG instance for `WEB_SEARCH` (see below for what "automatic" means in practice).
 
 It only updates the section you picked, leaving the rest of `.env` (including the Telegram token) untouched, and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
 
@@ -210,7 +210,38 @@ the model's own "missing" list is never the only check
 
 **Weather** (`tools/weather.py`) uses [Open-Meteo](https://open-meteo.com) — free, no API key. Two calls: its geocoding endpoint turns a place name into coordinates, then the forecast endpoint is queried for that specific day (`datetime_utils.validate_date()` resolves "mañana"/"el sábado" to a real date, capped at the ~15 days Open-Meteo actually forecasts; an invalid date just falls back to today instead of blocking the request). If no city is named and `DEFAULT_LOCATION` isn't set, it's treated as a missing field like any other. The reply is fully templated in Python — a weather result is already the answer, no synthesis needed.
 
-**Web search** (`tools/websearch.py`) talks to a self-hosted [SearXNG](https://docs.searxng.org/) instance (`SEARXNG_URL`) instead of a third-party search API directly — **the model never touches the network**; Python makes the HTTP request and only a compact `title`/`url`/`snippet` per result (top 5) ever reaches the LLM. This is the **one deliberate exception** to "never a second Ollama call": raw snippets need language understanding to become a natural answer, which a fixed template can't do, so `actions._summarize_search_results()` sends just those compact results back for a synthesis pass — explicitly instructed to answer only from what's there rather than filling gaps from the model's own (possibly outdated) knowledge. If `SEARXNG_URL` isn't set, the bot says so plainly instead of failing silently. Note SearXNG needs `json` enabled under `search.formats` in its own `settings.yml` — it's off by default.
+**Web search** (`tools/websearch.py`) talks to a self-hosted [SearXNG](https://docs.searxng.org/) instance (`SEARXNG_URL`) instead of a third-party search API directly — **the model never touches the network**; a `SearchService` class makes the HTTP request (with a timeout and one small retry) and only a compact `title`/`url`/`snippet` per result (top 5, each capped in length) ever reaches the LLM, never raw SearXNG JSON. This is the **one deliberate exception** to "never a second Ollama call": raw snippets need language understanding to become a natural answer, which a fixed template can't do, so `actions._summarize_search_results()` sends just those compact results back for a synthesis pass — explicitly instructed to answer only from what's there rather than filling gaps from the model's own (possibly outdated) knowledge. If `SEARXNG_URL` isn't set or SearXNG is unreachable, the bot says so plainly (`SearchError`) instead of crashing or failing silently.
+
+### Setting up SearXNG (automatic)
+
+```bash
+python configure.py   # option 4
+```
+
+This detects and reuses whatever's already there before touching anything (safe to run repeatedly):
+1. If `SEARXNG_URL` in `.env` already points to a working instance, it's reused as-is — nothing is installed.
+2. Otherwise, if a container named `asimov-searxng` already exists, it's started if stopped and reused.
+3. Otherwise, if Docker is available, it installs SearXNG itself: generates `searxng/settings.yml` (JSON API enabled, the bot-detection rate limiter disabled since Asimov is its only client, `search.secret_key` generated once with `secrets.token_urlsafe(32)` and never regenerated on later runs) and starts a container named `asimov-searxng` with `--restart unless-stopped`, published **only** to `127.0.0.1:8080` — never a public port. `searxng/` is gitignored since it holds that secret key.
+4. If Docker isn't installed, it offers to install it (official `get.docker.com` script, asks for confirmation first since it needs `sudo`); if Docker is installed but the current user can't use it (not in the `docker` group), it explains the exact command needed and stops — it never runs `usermod` silently, since that requires logging back in to take effect anyway.
+5. If port 8080 is already taken by something else, it asks for an alternate port instead of guessing one.
+
+Asimov itself runs directly on the host (not in Docker), so only SearXNG runs containerized; no Docker Compose is introduced into the project for this.
+
+Check its status any time without going through the menu:
+```bash
+python configure.py --check-searxng
+```
+```
+SearXNG
+-------
+Installed: YES
+Running: YES
+Endpoint: http://127.0.0.1:8080
+API: OK
+Search: OK
+```
+
+To fix a broken install: `docker logs asimov-searxng` for its own logs, or `docker rm -f asimov-searxng` followed by `python configure.py` (option 4) to recreate it — it'll reuse `searxng/settings.yml` (and therefore the same secret key) if that directory is still there. To disable web search entirely, clear `SEARXNG_URL` in `.env` (or via `configure.py`) — the bot then just tells the user web search isn't configured instead of attempting it.
 
 **Adding a new tool** means: write `tools/<name>.py` with plain functions that talk to `db.py` (or an external API), add its action(s) to `ALLOWED_ACTIONS` and `TOOLS_BLOCK` in `context.py`, add a validator to `VALIDATORS` in `actions.py`, and a branch in `run_action()`. No changes needed anywhere else.
 

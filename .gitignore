@@ -7,3 +7,6 @@ __pycache__/
 *.db
 
 logs/*.log*
+
+# Generated locally by configure.py, contains a secret_key.
+searxng/

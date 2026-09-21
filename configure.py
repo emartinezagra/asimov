@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 
+import searxng_manager
 from response_styles import RESPONSE_STYLE_LABELS, RESPONSE_STYLE_ORDER, DEFAULT_RESPONSE_STYLE
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -150,13 +151,13 @@ def choose_location_and_search(values):
     if location:
         values["DEFAULT_LOCATION"] = location
 
-    print(
-        "\nSearXNG instance URL for web search (e.g. http://localhost:8080). "
-        "Make sure its settings.yml has 'json' enabled under search.formats."
-    )
-    searxng = input(f"SearXNG URL [{values.get('SEARXNG_URL') or 'not set'}]: ").strip()
-    if searxng:
-        values["SEARXNG_URL"] = searxng.rstrip("/")
+    print()
+    url, error = searxng_manager.configure_searxng(values.get("SEARXNG_URL"))
+    if url:
+        values["SEARXNG_URL"] = url
+    else:
+        print(f"\nWeb search not configured: {error}")
+        print("Everything else (reminders, calendar, notes, tasks, memory, weather) still works.")
 
     return values
 
@@ -169,6 +170,10 @@ def main():
         sys.exit(1)
 
     values = read_env()
+
+    if "--check-searxng" in sys.argv:
+        print(searxng_manager.status_report(values.get("SEARXNG_URL")))
+        return
 
     print("=== Configure Asimov ===")
     print("  1. Response style")
