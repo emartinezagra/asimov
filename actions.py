@@ -387,6 +387,8 @@ def run_action(action, params, user_id, conv_id):
         result = memory_tool.remember(user_id, params["fact"])
         if result["status"] == "refused_sensitive":
             return "Prefiero no guardar ese tipo de información (contraseñas, claves o datos sensibles)."
+        if result["status"] == "refused_malformed":
+            return "Eso no parece un hecho concreto que pueda guardar. ¿Puedes decírmelo de forma más directa?"
         return "Lo recordaré. 🧠"
 
     if action == "FORGET":

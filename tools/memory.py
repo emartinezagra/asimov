@@ -19,12 +19,22 @@ def is_sensitive(text):
     return bool(_SENSITIVE_RE.search(text or ""))
 
 
+def looks_malformed(text):
+    """A real fact is a statement, never a question. A 3B model asked to
+    extract facts will sometimes echo back a clarifying question instead
+    (especially if the conversation itself contained one) — catching that
+    here stops it from polluting [MEM] and degrading every later prompt."""
+    return "?" in text or "¿" in text
+
+
 def remember(user_id, fact):
     fact = (fact or "").strip()
     if not fact:
         return {"status": "empty"}
     if is_sensitive(fact):
         return {"status": "refused_sensitive"}
+    if looks_malformed(fact):
+        return {"status": "refused_malformed"}
     db.upsert_user_fact(user_id, fact)
     return {"status": "saved", "fact": fact}
 
