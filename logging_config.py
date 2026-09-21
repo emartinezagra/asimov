@@ -23,8 +23,12 @@ def setup_logging(level=None):
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
 
-        root.setLevel(level)
         root.addHandler(file_handler)
         root.addHandler(console_handler)
+
+    # Siempre se reevalúa el nivel: memory.py llama a setup_logging() al
+    # importarse, antes de que bot.py ejecute load_dotenv(), así que la
+    # primera llamada puede no ver aún LOG_LEVEL del .env.
+    root.setLevel(level)
 
     return logging.getLogger("asimov")
