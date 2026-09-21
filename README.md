@@ -2,7 +2,23 @@
 
 Bot de Telegram con memoria conversacional (SQLite) y memoria semántica (RAG con ChromaDB), pensado para correr en local contra [Ollama](https://ollama.com) u otro LLM compatible con su API.
 
-## Requisitos
+## Instalación rápida (recomendada)
+
+Requiere solo Python 3 y `curl`. El instalador se encarga del resto: instala Ollama si falta, detecta la RAM y GPU de la máquina, **prueba varios modelos en real** y elige automáticamente el más grande que responda en menos de 10 segundos en tu hardware.
+
+```bash
+git clone https://github.com/emartinezagra/asimov.git
+cd asimov
+./install.sh
+```
+
+Te pedirá el token de Telegram (de [@BotFather](https://t.me/BotFather)) y, al terminar, te preguntará si quieres registrarlo como servicio `systemd` para que arranque solo.
+
+> Por ahora el instalador automático (`install.sh`/`install.py`) solo soporta **Linux**. Para Windows/Mac, sigue la instalación manual de abajo.
+
+## Instalación manual
+
+### Requisitos
 
 - Python 3.10+
 - [Ollama](https://ollama.com) corriendo en local (`http://127.0.0.1:11434` por defecto), con los modelos:
@@ -12,7 +28,7 @@ Bot de Telegram con memoria conversacional (SQLite) y memoria semántica (RAG co
   ```
 - Un token de bot de Telegram (se obtiene hablando con [@BotFather](https://t.me/BotFather))
 
-## Instalación
+### Pasos
 
 ```bash
 git clone https://github.com/emartinezagra/asimov.git
@@ -23,8 +39,6 @@ source venv/bin/activate      # en Windows: venv\Scripts\activate
 
 pip install -r requirements.txt
 ```
-
-## Configuración
 
 Copia la plantilla de variables de entorno y edítala con tu token:
 
@@ -53,7 +67,7 @@ python bot.py
 
 `conversations.db` y `memory_db/` se crean automáticamente en el primer arranque; tampoco se versionan, ya que son datos generados en tiempo de ejecución (historial de conversaciones y memoria semántica).
 
-Para dejarlo corriendo tras cerrar la sesión SSH, usa `tmux` o `screen`:
+Para dejarlo corriendo tras cerrar la sesión SSH sin usar `systemd`, puedes usar `tmux` o `screen`:
 
 ```bash
 tmux new -s asimov
@@ -61,3 +75,17 @@ source venv/bin/activate
 python bot.py
 # Ctrl+B, D para salir dejándolo corriendo
 ```
+
+## Cómo elige el modelo el instalador
+
+`install.py` prueba, de mayor a menor, estos modelos hasta encontrar uno que responda en menos de 10 segundos en la máquina donde se instala:
+
+| Modelo | RAM mínima orientativa |
+|---|---|
+| `llama3.1:8b` | 16 GB |
+| `mistral:7b` | 12 GB |
+| `llama3.2:3b` | 6 GB |
+| `llama3.2:1b` | 3 GB |
+| `qwen2.5:0.5b` | — |
+
+La RAM solo decide por dónde empezar a probar; la decisión final siempre se basa en el tiempo de respuesta real medido con un prompt de prueba contra Ollama, no solo en las specs detectadas.
