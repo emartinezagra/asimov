@@ -32,8 +32,20 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Falta TELEGRAM_TOKEN. Definilo en un archivo .env (ver .env.example).")
 
+# Límites para que el prompt enviado a Ollama no crezca sin control: cuántos
+# recuerdos/mensajes se recuperan, y cuántos caracteres de cada uno se usan.
+MEMORY_RESULTS = 3
+MEMORY_SNIPPET_CHARS = 300
+HISTORY_MESSAGES = 6
+HISTORY_SNIPPET_CHARS = 300
+MEMORY_STORE_CHARS = 500  # también se recorta lo que se guarda, para que no siga creciendo
+
 active_conversation = {}   # user_id -> conversation_id (en RAM, se pierde al reiniciar el bot)
 pending_reminders = {}     # simple, en RAM
+
+def truncate(text, max_chars):
+    text = text.strip()
+    return text if len(text) <= max_chars else text[:max_chars].rstrip() + "…"
 
 # ---------- /start: elegir nueva o continuar ----------
 
@@ -114,12 +126,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Memoria semántica (RAG) — busca en TODO el historial del usuario, no solo esta conversación
-    relevant = search_memory(user_id, user_text, k=5)
-    memory_block = "\n".join(relevant) if relevant else "Sin recuerdos relevantes."
+    relevant = search_memory(user_id, user_text, k=MEMORY_RESULTS)
+    memory_block = "\n".join(truncate(m, MEMORY_SNIPPET_CHARS) for m in relevant) \
+        if relevant else "Sin recuerdos relevantes."
 
     # Ventana reciente — solo los últimos turnos de ESTA conversación (acotado, no crece sin límite)
-    recent = get_recent_messages(conv_id, limit=8)
-    history_block = "\n".join(f"{r}: {c}" for r, c in recent) if recent else "Inicio de la conversación."
+    recent = get_recent_messages(conv_id, limit=HISTORY_MESSAGES)
+    history_block = "\n".join(f"{r}: {truncate(c, HISTORY_SNIPPET_CHARS)}" for r, c in recent) \
+        if recent else "Inicio de la conversación."
 
     fecha_actual = datetime.now().strftime("%A %d de %B de %Y, %H:%M")
 
@@ -161,8 +175,8 @@ Mensaje actual del usuario: {user_text}
     set_title_if_missing(conv_id, user_text)
     add_message(conv_id, "Usuario", user_text)
     add_message(conv_id, "Tú", answer)
-    add_memory(user_id, f"Usuario dijo: {user_text}")
-    add_memory(user_id, f"Tú respondiste: {answer}")
+    add_memory(user_id, f"Usuario dijo: {truncate(user_text, MEMORY_STORE_CHARS)}")
+    add_memory(user_id, f"Tú respondiste: {truncate(answer, MEMORY_STORE_CHARS)}")
 
     logger.info(f"Replied to user {user_id} in conversation {conv_id}")
     await update.message.reply_text(answer)

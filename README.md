@@ -111,6 +111,14 @@ python configure.py
 
 `configure.py` actualiza `.env` (sin tocar el resto de variables, como el token) y reinicia el bot automáticamente si está corriendo como servicio `systemd`; si no, te indica cómo reiniciarlo a mano.
 
+## Tamaño del prompt
+
+Cada mensaje se envía a Ollama junto con recuerdos relevantes (RAG) y los últimos turnos de la conversación. Para que ese contexto no crezca sin límite y dispare el tiempo de `prompt_eval` (sobre todo sin GPU), `bot.py` acota, mediante constantes al principio del fichero:
+
+- `MEMORY_RESULTS` (3) / `MEMORY_SNIPPET_CHARS` (300) — cuántos recuerdos se recuperan y cuántos caracteres de cada uno se usan.
+- `HISTORY_MESSAGES` (6) / `HISTORY_SNIPPET_CHARS` (300) — lo mismo para los mensajes recientes de la conversación.
+- `MEMORY_STORE_CHARS` (500) — también se recorta lo que se guarda como recuerdo nuevo, para que no siga creciendo indefinidamente.
+
 ## Logs
 
 El bot escribe logs (en inglés) a `logs/asimov.log`, con rotación automática (5 MB por fichero, 3 copias de respaldo) y también por consola. Se registran arranque del bot, acciones de usuario (start, nueva conversación, mensajes) y errores (fallos al llamar a Ollama, excepciones no controladas). Los ficheros de log no se versionan (`logs/*.log*` está en `.gitignore`); solo se mantiene la carpeta vacía en el repo.
