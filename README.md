@@ -105,14 +105,20 @@ The bot replies according to one of three styles, defined in [response_styles.py
 
 (The instruction text itself stays in Spanish, since that's the language the bot talks to Telegram users in.)
 
-Chosen the first time in `install.py`, and saved to `.env` as `RESPONSE_STYLE`. To change it later:
+Chosen the first time in `install.py`, and saved to `.env` as `RESPONSE_STYLE`. To change it — or the other settings below — later:
 
 ```bash
 source venv/bin/activate
 python configure.py
 ```
 
-`configure.py` updates `.env` (without touching other variables like the token) and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
+`configure.py` shows a small menu:
+
+1. **Response style** — as above.
+2. **Timezone** — the IANA timezone (e.g. `Europe/Madrid`) used to resolve reminder/calendar dates; validated against Python's `zoneinfo` before saving, so a typo can't silently break date resolution.
+3. **Email (contacts + SMTP)** — add `name:email` contacts one at a time (existing ones are shown and can be overwritten), and set the SMTP host/port/user/password/from address needed to actually send emails. The password prompt hides your input (`getpass`) and is never echoed or logged.
+
+It only updates the section you picked, leaving the rest of `.env` (including the Telegram token) untouched, and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
 
 ## Project layout
 
