@@ -8,6 +8,8 @@ DB_PATH = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "conversations.db")
 )
 
+STATE_FIELDS = ("state_topic", "state_goal", "state_pending", "state_note")
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -27,8 +29,6 @@ def get_conn():
             timestamp TEXT
         )
     """)
-    # "summary" stores the STATE (compact conversation state: topic, entities,
-    # decisions, pending tasks), not a long narrative summary.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS user_facts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,15 +37,34 @@ def get_conn():
             created_at TEXT
         )
     """)
-    # Migration for databases created before progressive summarization was added.
+
+    # Migration: numbered turns (one number shared by a Usuario/Tú pair),
+    # needed to deterministically resolve references like "2 questions ago".
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN turn_number INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Migration: structured STATE (topic/goal/pending/note) replacing the old
+    # free-text "summary" column, which let the model copy-paste prose into it.
+    migrated_state = False
     for stmt in (
-        "ALTER TABLE conversations ADD COLUMN summary TEXT",
+        "ALTER TABLE conversations ADD COLUMN state_topic TEXT",
+        "ALTER TABLE conversations ADD COLUMN state_goal TEXT",
+        "ALTER TABLE conversations ADD COLUMN state_pending TEXT",
+        "ALTER TABLE conversations ADD COLUMN state_note TEXT",
         "ALTER TABLE conversations ADD COLUMN summarized_up_to INTEGER DEFAULT 0",
     ):
         try:
             conn.execute(stmt)
+            migrated_state = True
         except sqlite3.OperationalError:
             pass  # column already exists
+    if migrated_state:
+        # summarized_up_to used to count folded messages under the old scheme;
+        # it now counts folded turn numbers, so reset it once on upgrade.
+        conn.execute("UPDATE conversations SET summarized_up_to = 0")
+
     return conn
 
 def create_conversation(user_id):
@@ -85,57 +104,87 @@ def set_title_if_missing(conv_id, text):
 
 def add_message(conv_id, role, content):
     conn = get_conn()
+    if role == "Usuario":
+        row = conn.execute(
+            "SELECT COALESCE(MAX(turn_number), 0) FROM messages WHERE conversation_id = ?", (conv_id,)
+        ).fetchone()
+        turn_number = row[0] + 1
+    else:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(turn_number), 0) FROM messages WHERE conversation_id = ?", (conv_id,)
+        ).fetchone()
+        turn_number = row[0]  # same turn as the Usuario message just inserted
     conn.execute(
-        "INSERT INTO messages (conversation_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-        (conv_id, role, content, datetime.now().isoformat())
+        "INSERT INTO messages (conversation_id, role, content, timestamp, turn_number) VALUES (?, ?, ?, ?, ?)",
+        (conv_id, role, content, datetime.now().isoformat(), turn_number)
     )
     conn.commit()
     conn.close()
 
-def get_recent_messages(conv_id, limit=8):
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
-        (conv_id, limit)
-    ).fetchall()
-    conn.close()
-    return list(reversed(rows))  # chronological order
-
-def count_messages(conv_id):
+def get_current_turn_number(conv_id):
     conn = get_conn()
     row = conn.execute(
-        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conv_id,)
+        "SELECT COALESCE(MAX(turn_number), 0) FROM messages WHERE conversation_id = ?", (conv_id,)
     ).fetchone()
     conn.close()
     return row[0]
 
-def get_conversation_summary_state(conv_id):
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT summary, summarized_up_to FROM conversations WHERE id = ?", (conv_id,)
-    ).fetchone()
-    conn.close()
-    if row is None:
-        return None, 0
-    return row[0], row[1] or 0
-
-def update_conversation_summary(conv_id, summary, summarized_up_to):
-    conn = get_conn()
-    conn.execute(
-        "UPDATE conversations SET summary = ?, summarized_up_to = ? WHERE id = ?",
-        (summary, summarized_up_to, conv_id)
-    )
-    conn.commit()
-    conn.close()
-
-def get_messages_range(conv_id, offset, limit):
+def get_turn(conv_id, turn_number):
+    """Returns (user_text, assistant_text) for a specific turn, or None if it doesn't exist."""
     conn = get_conn()
     rows = conn.execute(
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
-        (conv_id, limit, offset)
+        "SELECT role, content FROM messages WHERE conversation_id = ? AND turn_number = ? ORDER BY id ASC",
+        (conv_id, turn_number)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    user_text = next((c for r, c in rows if r == "Usuario"), None)
+    assistant_text = next((c for r, c in rows if r == "Tú"), None)
+    return user_text, assistant_text
+
+def get_recent_turns(conv_id, n_turns):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+        (conv_id, n_turns * 2)
+    ).fetchall()
+    conn.close()
+    return list(reversed(rows))  # chronological order
+
+def get_turns_range(conv_id, from_turn_exclusive, to_turn_inclusive):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE conversation_id = ? "
+        "AND turn_number > ? AND turn_number <= ? ORDER BY id ASC",
+        (conv_id, from_turn_exclusive, to_turn_inclusive)
     ).fetchall()
     conn.close()
     return rows
+
+def get_conversation_state(conv_id):
+    conn = get_conn()
+    row = conn.execute(
+        f"SELECT {', '.join(STATE_FIELDS)}, summarized_up_to FROM conversations WHERE id = ?",
+        (conv_id,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return {}, 0
+    topic, goal, pending, note, summarized_up_to = row
+    state = {k: v for k, v in (("topic", topic), ("goal", goal), ("pending", pending), ("note", note)) if v}
+    return state, summarized_up_to or 0
+
+def update_conversation_state(conv_id, state, summarized_up_to):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE conversations SET state_topic = ?, state_goal = ?, state_pending = ?, "
+        "state_note = ?, summarized_up_to = ? WHERE id = ?",
+        (state.get("topic"), state.get("goal"), state.get("pending"), state.get("note"),
+         summarized_up_to, conv_id)
+    )
+    conn.commit()
+    conn.close()
 
 def get_user_facts(user_id):
     conn = get_conn()

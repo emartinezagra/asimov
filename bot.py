@@ -1,4 +1,6 @@
 import os
+import re
+import unicodedata
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
@@ -9,9 +11,9 @@ from telegram.ext import (
 )
 from db import (
     create_conversation, list_conversations, list_known_users,
-    set_title_if_missing, add_message, get_recent_messages,
-    count_messages, get_conversation_summary_state,
-    update_conversation_summary, get_messages_range,
+    set_title_if_missing, add_message,
+    get_current_turn_number, get_turn, get_recent_turns, get_turns_range,
+    get_conversation_state, update_conversation_state,
     get_user_facts, upsert_user_fact
 )
 from logging_config import setup_logging
@@ -34,18 +36,25 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Missing TELEGRAM_TOKEN. Set it in a .env file (see .env.example).")
 
-# [RECENT] literal-turn window: small by default because [STATE] already
-# carries condensed continuity; it only expands when the message looks
-# like it depends on recent context (pronouns, very short/elliptical messages).
-DEFAULT_WINDOW = 4
-EXPANDED_WINDOW = 8
+# [RECENT] literal-turn window, in TURNS (a turn = one Usuario + one Tú message).
+# Small by default because [STATE] already carries condensed continuity, and a
+# 3B model performs worse the more literal text gets mixed in. It only expands
+# when the message looks context-dependent AND no explicit reference could be
+# resolved deterministically (see resolve_reference below).
+DEFAULT_WINDOW_TURNS = 2
+EXPANDED_WINDOW_TURNS = 4
 HISTORY_SNIPPET_CHARS = 300
-STATE_MAX_CHARS = 400
+STATE_FIELD_MAX_CHARS = 150
 FACT_MAX_CHARS = 150
 
-# Every SUMMARY_BATCH_SIZE messages that fall out of the [RECENT] window without
+# A STATE field longer than this after extraction is treated as a likely
+# copy-paste of prior assistant prose rather than a synthesized state, and
+# is discarded (keeping the previous value) instead of accepted as-is.
+FIELD_SANITY_MAX_CHARS = 220
+
+# Every SUMMARY_BATCH_TURNS turns that fall out of the [RECENT] window without
 # being folded yet trigger a [STATE] update + extraction of new facts for [MEM].
-SUMMARY_BATCH_SIZE = 6
+SUMMARY_BATCH_TURNS = 3
 
 active_conversation = {}   # user_id -> conversation_id (in RAM, lost on bot restart)
 pending_reminders = {}     # simple, in RAM
@@ -59,12 +68,70 @@ def looks_referential(text):
     lowered = text.lower()
     return len(text) < 40 or any(m in lowered for m in markers)
 
-# ---------- Layered prompt construction: [SYS][MEM][STATE][RECENT][USER] ----------
+# ---------- Deterministic reference resolution (no LLM) ----------
+
+_NUMBER_WORDS = {"una": 1, "un": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5}
+
+_PREVIOUS_TURN_MARKERS = (
+    "pregunte antes", "dije antes", "respuesta anterior", "pregunta anterior",
+    "me contestaste", "respondiste antes", "acabo de preguntar", "te pregunte",
+)
+
+def _normalize(text):
+    text = text.lower()
+    return "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
+
+def format_reference(conv_id, turn_number):
+    turn = get_turn(conv_id, turn_number)
+    if not turn:
+        return None
+    user_text, assistant_text = turn
+    lines = []
+    if user_text:
+        lines.append(f"[turno {turn_number}] Usuario: {truncate(user_text, HISTORY_SNIPPET_CHARS)}")
+    if assistant_text:
+        lines.append(f"[turno {turn_number}] Tú: {truncate(assistant_text, HISTORY_SNIPPET_CHARS)}")
+    return "\n".join(lines) if lines else None
+
+def resolve_reference(conv_id, user_text):
+    """Deterministically resolves references like "hace dos preguntas" or "la
+    pregunta anterior" to a specific turn number, without involving the LLM."""
+    current_turn = get_current_turn_number(conv_id)
+    if current_turn == 0:
+        return None
+    norm = _normalize(user_text)
+
+    # "hace N preguntas/mensajes/turnos" — the question being asked right now
+    # would be turn (current_turn + 1), so "N questions ago" is
+    # (current_turn + 1) - N = current_turn - N + 1.
+    m = re.search(r"hace\s+(\d+|una|un|dos|tres|cuatro|cinco)\s+(pregunta|mensaje|turno)", norm)
+    if m:
+        token = m.group(1)
+        n = int(token) if token.isdigit() else _NUMBER_WORDS.get(token)
+        if n and 0 < n <= current_turn:
+            return format_reference(conv_id, current_turn - n + 1)
+
+    # "la primera pregunta" / "la primera cosa que te pedi"
+    if re.search(r"\bla primera\b", norm):
+        return format_reference(conv_id, 1)
+
+    # a bare reference to "the previous turn" ("what did I ask before?", etc.)
+    # — that's simply the last stored turn, i.e. current_turn itself.
+    if current_turn >= 1 and any(marker in norm for marker in _PREVIOUS_TURN_MARKERS):
+        return format_reference(conv_id, current_turn)
+
+    return None
+
+# ---------- Layered prompt construction: [SYS][MEM][STATE][REFERENCE][RECENT][USER] ----------
+
+def format_state(state):
+    labels = (("topic", "Tema"), ("goal", "Objetivo"), ("pending", "Pendiente"), ("note", "Nota"))
+    lines = [f"{label}: {truncate(state[key], STATE_FIELD_MAX_CHARS)}" for key, label in labels if state.get(key)]
+    return "\n".join(lines)
 
 def format_recent(recent):
     # Tags each Usuario/Tú pair with how many questions ago it was, so the
-    # model doesn't have to count plain alternating lines itself to answer
-    # something like "what did I ask two questions ago?".
+    # model doesn't have to count plain alternating lines itself.
     pairs = [recent[i:i + 2] for i in range(0, len(recent), 2)]
     total = len(pairs)
     lines = []
@@ -83,12 +150,18 @@ def build_prompt(user_id, conv_id, user_text):
     if facts:
         parts.append("[MEM]\n" + "\n".join(f"- {f}" for f in facts))
 
-    state, _ = get_conversation_summary_state(conv_id)
+    state, _ = get_conversation_state(conv_id)
     if state:
-        parts.append(f"[STATE]\n{truncate(state, STATE_MAX_CHARS)}")
+        parts.append(f"[STATE]\n{format_state(state)}")
 
-    window = EXPANDED_WINDOW if looks_referential(user_text) else DEFAULT_WINDOW
-    recent = get_recent_messages(conv_id, limit=window)
+    reference = resolve_reference(conv_id, user_text)
+    if reference:
+        parts.append(f"[REFERENCE]\n{reference}")
+        window_turns = DEFAULT_WINDOW_TURNS  # already resolved explicitly, no need to widen RECENT
+    else:
+        window_turns = EXPANDED_WINDOW_TURNS if looks_referential(user_text) else DEFAULT_WINDOW_TURNS
+
+    recent = get_recent_turns(conv_id, window_turns)
     if recent:
         parts.append(f"[RECENT]\n{format_recent(recent)}")
 
@@ -150,63 +223,94 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- [STATE] update and [MEM] fact extraction ----------
 
-def parse_extraction(text):
-    state = None
+_STATE_LABELS = (("topic", "TOPIC"), ("goal", "GOAL"), ("pending", "PENDING"), ("note", "NOTE"))
+
+def parse_state_and_facts(text):
+    fields = {}
     facts = []
     mode = None
     for line in text.strip().splitlines():
         stripped = line.strip()
-        if stripped.upper().startswith("STATE:"):
-            state = stripped[len("STATE:"):].strip()
-            mode = "state"
+        upper = stripped.upper()
+
+        matched = False
+        for key, label in _STATE_LABELS:
+            if upper.startswith(label + ":"):
+                value = stripped[len(label) + 1:].strip()
+                fields[key] = None if (not value or value.upper() == "NONE") else value
+                mode = None
+                matched = True
+                break
+        if matched:
             continue
-        if stripped.upper().startswith("FACTS:"):
+
+        if upper.startswith("FACTS:"):
             rest = stripped[len("FACTS:"):].strip()
             mode = "facts"
             if rest and rest.upper() != "NONE":
                 facts.append(rest.lstrip("-").strip())
             continue
+
         if mode == "facts" and stripped.startswith("-"):
             fact = stripped.lstrip("-").strip()
             if fact and fact.upper() != "NONE":
                 facts.append(fact)
-        elif mode == "state" and stripped:
-            state = f"{state} {stripped}" if state else stripped
-    return state, facts
+
+    return fields, facts
+
+def merge_state(prev_state, new_fields):
+    merged = {}
+    for key, _ in _STATE_LABELS:
+        value = new_fields.get(key) if key in new_fields else "__unset__"
+        if value == "__unset__":
+            merged[key] = prev_state.get(key)  # field wasn't in the model's output at all
+        elif value is None:
+            merged[key] = None  # model explicitly said NONE: treat as resolved/cleared
+        elif len(value) <= FIELD_SANITY_MAX_CHARS:
+            merged[key] = value
+        else:
+            # Suspiciously long: likely copy-pasted prose instead of a synthesized
+            # state, so keep the previous value instead of accepting it.
+            merged[key] = prev_state.get(key)
+    return merged
 
 async def maybe_update_state_and_facts(conv_id, user_id):
-    total = count_messages(conv_id)
-    prev_state, summarized_up_to = get_conversation_summary_state(conv_id)
-    foldable = total - DEFAULT_WINDOW - summarized_up_to
+    current_turn = get_current_turn_number(conv_id)
+    prev_state, summarized_up_to = get_conversation_state(conv_id)
+    foldable = current_turn - DEFAULT_WINDOW_TURNS - summarized_up_to
 
-    if foldable < SUMMARY_BATCH_SIZE:
+    if foldable < SUMMARY_BATCH_TURNS:
         return
 
-    batch = get_messages_range(conv_id, offset=summarized_up_to, limit=foldable)
+    to_turn = summarized_up_to + foldable
+    batch = get_turns_range(conv_id, summarized_up_to, to_turn)
     transcript = "\n".join(f"{r}: {c}" for r, c in batch)
 
-    extraction_prompt = f"""A partir del ESTADO PREVIO y estos turnos, genera dos cosas.
+    extraction_prompt = f"""Analiza estos turnos de conversación y responde EXACTAMENTE en este \
+formato, una línea por campo, sin texto adicional:
 
-STATE: una línea compacta con el tema, entidades mencionadas, decisiones tomadas y tareas \
-pendientes de esta conversación, y cualquier referente necesario para entender pronombres \
-futuros como "eso" o "el anterior". Si el usuario corrigió una afirmación del asistente, \
-refleja la corrección, no la afirmación original. No incluyas saludos, cortesías ni texto repetido.
+TOPIC: <tema actual en pocas palabras, o NONE>
+GOAL: <objetivo actual del usuario, o NONE>
+PENDING: <preguntas o tareas del usuario aún sin responder, o NONE>
+NOTE: <si el usuario corrigió algo que dijiste, qué corrigió exactamente — nunca repitas tu \
+afirmación original — o NONE>
+FACTS:
+- <hecho ESTABLE que el USUARIO haya dicho sobre sí mismo>
+(o FACTS: NONE)
 
-FACTS: hechos estables que el USUARIO haya dicho sobre sí mismo (edad, trabajo, preferencias, \
-objetivos). Ignora cualquier frase dicha por el asistente. Un hecho por línea, empezando con "-". \
-Si no hay ninguno, escribe NONE.
+Reglas importantes:
+- No copies frases textuales de tus propias respuestas anteriores: describe el estado, no lo repitas.
+- No incluyas saludos ni cortesías.
+- En FACTS, guarda solo información duradera (profesión, habilidades, objetivos a largo plazo, \
+preferencias generales) — por ejemplo "Soy desarrollador web" sí es un hecho duradero. NO guardes \
+información específica de esta conversación (por ejemplo "hoy busco ofertas de Python" es contexto \
+de esta conversación, no un hecho permanente; eso va en PENDING o TOPIC, no en FACTS).
 
-ESTADO PREVIO: {prev_state or "(ninguno)"}
+ESTADO PREVIO:
+{format_state(prev_state) if prev_state else "(ninguno)"}
 
 TURNOS:
-{transcript}
-
-Responde exactamente en este formato:
-STATE: <una línea>
-FACTS:
-- <hecho 1>
-- <hecho 2>
-(o FACTS: NONE si no hay ninguno)"""
+{transcript}"""
 
     try:
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
@@ -214,15 +318,16 @@ FACTS:
             "keep_alive": OLLAMA_KEEP_ALIVE
         })
         resp.raise_for_status()
-        new_state, new_facts = parse_extraction(resp.json()["response"])
+        new_fields, new_facts = parse_state_and_facts(resp.json()["response"])
+        merged_state = merge_state(prev_state, new_fields)
 
-        update_conversation_summary(conv_id, new_state or prev_state, summarized_up_to + foldable)
+        update_conversation_state(conv_id, merged_state, to_turn)
         for fact in new_facts:
             upsert_user_fact(user_id, truncate(fact, FACT_MAX_CHARS))
 
         logger.info(
             f"Updated state for conversation {conv_id} "
-            f"(folded {foldable} messages, {len(new_facts)} new facts)"
+            f"(folded turns {summarized_up_to+1}-{to_turn}, {len(new_facts)} new facts)"
         )
     except Exception:
         logger.error(f"Failed to update state/facts for conversation {conv_id}", exc_info=True)
