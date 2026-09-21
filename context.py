@@ -61,9 +61,12 @@ LIST_TASKS()
 REMEMBER(fact)
 FORGET(text)
 LIST_MEMORY()
+WEATHER(location?, date?)
+WEB_SEARCH(query)
 
 Usa "missing" (lista de campos que faltan) si no tienes toda la información necesaria para REMINDER, CALENDAR o EMAIL_DRAFT. No inventes fechas, horas ni destinatarios: si no los tienes, decláralos en "missing".
-REMEMBER es solo para hechos duraderos que el usuario pide explícitamente recordar (preferencias, datos personales, proyectos); nunca para contraseñas, tokens ni datos bancarios."""
+REMEMBER es solo para hechos duraderos que el usuario pide explícitamente recordar (preferencias, datos personales, proyectos); nunca para contraseñas, tokens ni datos bancarios.
+En WEATHER, "date" es opcional (por defecto hoy) y debe ser una fecha AAAA-MM-DD si se indica un día concreto."""
 
 
 def truncate(text, max_chars):

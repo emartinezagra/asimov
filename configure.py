@@ -142,6 +142,25 @@ def configure_email(values):
     return choose_email_settings(values)
 
 
+# ---------- Location + web search ----------
+
+def choose_location_and_search(values):
+    print("\nDefault city for weather questions that don't name one (e.g. \"¿va a llover mañana?\").")
+    location = input(f"Default location [{values.get('DEFAULT_LOCATION') or 'not set'}]: ").strip()
+    if location:
+        values["DEFAULT_LOCATION"] = location
+
+    print(
+        "\nSearXNG instance URL for web search (e.g. http://localhost:8080). "
+        "Make sure its settings.yml has 'json' enabled under search.formats."
+    )
+    searxng = input(f"SearXNG URL [{values.get('SEARXNG_URL') or 'not set'}]: ").strip()
+    if searxng:
+        values["SEARXNG_URL"] = searxng.rstrip("/")
+
+    return values
+
+
 # ---------- Main menu ----------
 
 def main():
@@ -155,7 +174,8 @@ def main():
     print("  1. Response style")
     print("  2. Timezone (used to resolve reminders/calendar dates)")
     print("  3. Email (contacts + SMTP, needed to actually send emails)")
-    choice = input("Option [1-3]: ").strip()
+    print("  4. Default location + web search (weather, SearXNG)")
+    choice = input("Option [1-4]: ").strip()
 
     if choice == "1":
         new_style = choose_response_style(values.get("RESPONSE_STYLE", DEFAULT_RESPONSE_STYLE))
@@ -170,6 +190,10 @@ def main():
         values = configure_email(values)
         write_env(values)
         print("\nEmail settings updated.")
+    elif choice == "4":
+        values = choose_location_and_search(values)
+        write_env(values)
+        print("\nLocation/search settings updated.")
     else:
         print("Invalid option.")
         sys.exit(1)

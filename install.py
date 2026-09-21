@@ -163,9 +163,13 @@ def write_env(telegram_token, chat_model, response_style):
         f.write("EMAIL_USER=\n")
         f.write("EMAIL_PASSWORD=\n")
         f.write("EMAIL_FROM=\n")
+        f.write("DEFAULT_LOCATION=\n")
+        f.write("SEARXNG_URL=\n")
     print(".env created.")
-    print("Reminders and calendar work out of the box. To enable sending emails,")
-    print("edit .env and fill in CONTACTS and the EMAIL_* SMTP settings (see README).")
+    print("Reminders, calendar, notes, tasks and memory work out of the box.")
+    print("To enable sending emails, weather, or web search, edit .env (or run")
+    print("configure.py) and fill in CONTACTS/EMAIL_*, DEFAULT_LOCATION, and")
+    print("SEARXNG_URL respectively (see README).")
 
 
 def setup_venv():

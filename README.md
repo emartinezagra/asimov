@@ -58,6 +58,8 @@ Variables available in `.env`:
 | `TIMEZONE` | IANA timezone used to resolve dates/times ("tomorrow at 9", "in 10 minutes"...) | `Europe/Madrid` |
 | `CONTACTS` | `Name:email` pairs, comma-separated, so emails can be sent by first name | (empty) |
 | `EMAIL_SMTP_HOST` / `EMAIL_SMTP_PORT` / `EMAIL_USER` / `EMAIL_PASSWORD` / `EMAIL_FROM` | SMTP credentials for sending email. Leave `EMAIL_SMTP_HOST` empty to disable sending | (empty) |
+| `DEFAULT_LOCATION` | City used for weather questions that don't name one | (empty) |
+| `SEARXNG_URL` | Base URL of a [SearXNG](https://docs.searxng.org/) instance for `WEB_SEARCH`. Leave empty to disable web search | (empty) |
 
 `.env` is **not** pushed to the repo (it's in `.gitignore`) — each person uses their own token.
 
@@ -117,6 +119,7 @@ python configure.py
 1. **Response style** — as above.
 2. **Timezone** — the IANA timezone (e.g. `Europe/Madrid`) used to resolve reminder/calendar dates; validated against Python's `zoneinfo` before saving, so a typo can't silently break date resolution.
 3. **Email (contacts + SMTP)** — add `name:email` contacts one at a time (existing ones are shown and can be overwritten), and set the SMTP host/port/user/password/from address needed to actually send emails. The password prompt hides your input (`getpass`) and is never echoed or logged.
+4. **Default location + web search** — the city used for weather questions that don't name one, and the `SearXNG` instance URL for `WEB_SEARCH`.
 
 It only updates the section you picked, leaving the rest of `.env` (including the Telegram token) untouched, and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
 
@@ -205,9 +208,13 @@ the model's own "missing" list is never the only check
 - **Sensitive data is refused, not stored.** `tools/memory.is_sensitive()` pattern-matches for passwords, tokens, API keys, PINs, card/account numbers, etc., and refuses to save a match — checked on *both* entry points, plus the extraction prompt itself is separately instructed never to put that kind of thing in `FACTS`. Defense in depth: an instruction a 3B model might ignore, backed by a code-level check that can't be talked out of it.
 - **Deletable.** `FORGET` reuses the same ambiguous/not-found matching pattern as cancelling a reminder or event.
 
+**Weather** (`tools/weather.py`) uses [Open-Meteo](https://open-meteo.com) — free, no API key. Two calls: its geocoding endpoint turns a place name into coordinates, then the forecast endpoint is queried for that specific day (`datetime_utils.validate_date()` resolves "mañana"/"el sábado" to a real date, capped at the ~15 days Open-Meteo actually forecasts; an invalid date just falls back to today instead of blocking the request). If no city is named and `DEFAULT_LOCATION` isn't set, it's treated as a missing field like any other. The reply is fully templated in Python — a weather result is already the answer, no synthesis needed.
+
+**Web search** (`tools/websearch.py`) talks to a self-hosted [SearXNG](https://docs.searxng.org/) instance (`SEARXNG_URL`) instead of a third-party search API directly — **the model never touches the network**; Python makes the HTTP request and only a compact `title`/`url`/`snippet` per result (top 5) ever reaches the LLM. This is the **one deliberate exception** to "never a second Ollama call": raw snippets need language understanding to become a natural answer, which a fixed template can't do, so `actions._summarize_search_results()` sends just those compact results back for a synthesis pass — explicitly instructed to answer only from what's there rather than filling gaps from the model's own (possibly outdated) knowledge. If `SEARXNG_URL` isn't set, the bot says so plainly instead of failing silently. Note SearXNG needs `json` enabled under `search.formats` in its own `settings.yml` — it's off by default.
+
 **Adding a new tool** means: write `tools/<name>.py` with plain functions that talk to `db.py` (or an external API), add its action(s) to `ALLOWED_ACTIONS` and `TOOLS_BLOCK` in `context.py`, add a validator to `VALIDATORS` in `actions.py`, and a branch in `run_action()`. No changes needed anywhere else.
 
-**Not implemented yet:** `WEB_SEARCH` and `WEATHER` need a real external API (and a key) to avoid inventing results — they're not wired in until a provider is chosen. Chaining multiple actions from one message (e.g. "add it to the calendar and remind me an hour before") is intentionally deferred too, per the project's own phased plan — today each message resolves to exactly one action.
+**Not implemented yet:** chaining multiple actions from one message (e.g. "add it to the calendar and remind me an hour before") is intentionally deferred, per the project's own phased plan — today each message resolves to exactly one action.
 
 ## Logs
 

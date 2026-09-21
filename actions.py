@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 
@@ -11,8 +12,12 @@ from tools import email as email_tool
 from tools import notes as notes_tool
 from tools import tasks as tasks_tool
 from tools import memory as memory_tool
+from tools import weather as weather_tool
+from tools import websearch as websearch_tool
 
 logger = logging.getLogger("asimov")
+
+DEFAULT_LOCATION = os.getenv("DEFAULT_LOCATION", "").strip()
 
 ALLOWED_ACTIONS = {
     "CHAT", "REMINDER", "CANCEL_REMINDER", "LIST_REMINDERS",
@@ -21,6 +26,7 @@ ALLOWED_ACTIONS = {
     "NOTE", "SEARCH_NOTES", "LIST_NOTES", "DELETE_NOTE",
     "TASK", "COMPLETE_TASK", "CANCEL_TASK", "LIST_TASKS",
     "REMEMBER", "FORGET", "LIST_MEMORY",
+    "WEATHER", "WEB_SEARCH",
 }
 
 FALLBACK_MESSAGE = "No te he entendido bien. ¿Puedes reformularlo?"
@@ -193,6 +199,26 @@ def validate_forget(raw):
     return {"text": text.strip()}, []
 
 
+def validate_weather(raw):
+    location = raw.get("location") or DEFAULT_LOCATION
+    missing = [] if location else ["location"]
+
+    date_str = raw.get("date")
+    resolved_date = dtu.validate_date(date_str) if date_str else dtu.today_date_str()
+    if date_str and not resolved_date:
+        # An unusable date shouldn't block the whole request — just fall back to today.
+        resolved_date = dtu.today_date_str()
+
+    return {"location": location, "date": resolved_date}, missing
+
+
+def validate_web_search(raw):
+    query = raw.get("query")
+    if not (isinstance(query, str) and query.strip()):
+        return {}, ["query"]
+    return {"query": query.strip()}, []
+
+
 VALIDATORS = {
     "REMINDER": validate_reminder,
     "CANCEL_REMINDER": validate_cancel_reminder,
@@ -207,6 +233,8 @@ VALIDATORS = {
     "CANCEL_TASK": validate_task_title,
     "REMEMBER": validate_remember,
     "FORGET": validate_forget,
+    "WEATHER": validate_weather,
+    "WEB_SEARCH": validate_web_search,
 }
 
 # ---------- Missing-field questions (templated in Python, no extra LLM call) ----------
@@ -227,6 +255,8 @@ MISSING_FIELD_QUESTIONS = {
     ("CANCEL_TASK", "title"): "¿Qué tarea quieres eliminar?",
     ("REMEMBER", "fact"): "¿Qué quieres que recuerde?",
     ("FORGET", "text"): "¿Qué quieres que olvide?",
+    ("WEATHER", "location"): "¿De qué ciudad quieres saber el tiempo?",
+    ("WEB_SEARCH", "query"): "¿Qué quieres que busque?",
 }
 
 def missing_field_question(action, missing_fields, params):
@@ -373,7 +403,49 @@ def run_action(action, params, user_id, conv_id):
             return "Todavía no tengo nada guardado sobre ti."
         return "Esto es lo que recuerdo de ti:\n" + "\n".join(f"- {f}" for f in facts)
 
+    if action == "WEATHER":
+        result = weather_tool.get_weather(params["location"], params["date"])
+        if result["status"] == "location_not_found":
+            return f"No he encontrado la ubicación \"{result['location']}\"."
+        if result["status"] != "ok":
+            return "No he podido consultar el tiempo ahora mismo. Inténtalo de nuevo en un momento."
+        when = dtu.human_date(result["date"])
+        return (
+            f"En {result['location']} {when}: {result['condition']}, "
+            f"{result['temp_min']:.0f}–{result['temp_max']:.0f}°C, "
+            f"{result['rain_probability']}% de probabilidad de lluvia."
+        )
+
+    if action == "WEB_SEARCH":
+        result = websearch_tool.search(params["query"])
+        if result["status"] == "not_configured":
+            return "No tengo la búsqueda web configurada todavía."
+        if result["status"] == "no_results":
+            return "No he encontrado nada sobre eso."
+        if result["status"] != "ok":
+            return "No he podido buscar eso ahora mismo. Inténtalo de nuevo en un momento."
+        return _summarize_search_results(params["query"], result["results"])
+
     return FALLBACK_MESSAGE
+
+
+def _summarize_search_results(query, results):
+    # The one deliberate exception to "never a second LLM call": raw search
+    # snippets need language understanding to turn into an answer, which a
+    # fixed template can't do. Python still controls the actual network
+    # access — the model only ever sees these compact, already-fetched
+    # title/url/snippet triples, never the open internet.
+    lines = [f"- {r['title']}: {r['snippet']} ({r['url']})" for r in results]
+    prompt = f"""El usuario preguntó: "{query}"
+
+Estos son los resultados de una búsqueda web:
+{chr(10).join(lines)}
+
+Responde a la pregunta del usuario de forma natural y breve, basándote SOLO en estos resultados. \
+Si citas una fuente, menciona el título, no la URL completa. Si los resultados no responden la \
+pregunta, dilo claramente en vez de inventar."""
+    text, _ = llm.generate(prompt, log_label="websearch-summarize")
+    return text or "He encontrado resultados pero no he podido resumirlos. Inténtalo de nuevo."
 
 
 def _handle_send_confirmation(user_id, conv_id, user_text, params):
