@@ -13,6 +13,8 @@ import sys
 import time
 import urllib.request
 
+from response_styles import RESPONSE_STYLE_LABELS, RESPONSE_STYLE_ORDER, DEFAULT_RESPONSE_STYLE
+
 OLLAMA_URL = "http://127.0.0.1:11434"
 BENCHMARK_PROMPT = "Responde solo con la palabra 'ok'."
 
@@ -127,11 +129,23 @@ def choose_chat_model(ram_gb, cpu_cores, gpu):
         return model
 
 
-def write_env(telegram_token, chat_model):
+def choose_response_style():
+    print("\nElige el estilo de respuesta del bot:")
+    for i, key in enumerate(RESPONSE_STYLE_ORDER, start=1):
+        print(f"  {i}. {RESPONSE_STYLE_LABELS[key]}")
+    while True:
+        choice = input(f"Opción [1-{len(RESPONSE_STYLE_ORDER)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(RESPONSE_STYLE_ORDER):
+            return RESPONSE_STYLE_ORDER[int(choice) - 1]
+        print("Opción no válida.")
+
+
+def write_env(telegram_token, chat_model, response_style):
     with open(".env", "w") as f:
         f.write(f"TELEGRAM_TOKEN={telegram_token}\n")
         f.write(f"OLLAMA_URL={OLLAMA_URL}\n")
         f.write(f"CHAT_MODEL={chat_model}\n")
+        f.write(f"RESPONSE_STYLE={response_style}\n")
         f.write("DB_PATH=./conversations.db\n")
         f.write("MEMORY_DB_PATH=./memory_db\n")
     print(".env creado.")
@@ -191,12 +205,14 @@ def main():
     chat_model = choose_chat_model(ram_gb, cpu_cores, gpu)
     print(f"\nModelo de chat elegido: {chat_model}\n")
 
+    response_style = choose_response_style()
+
     token = input("Introduce tu token de Telegram (de @BotFather): ").strip()
     if not token:
         print("Token vacío, abortando.")
         sys.exit(1)
 
-    write_env(token, chat_model)
+    write_env(token, chat_model, response_style)
     setup_venv()
 
     as_service = input("\n¿Configurar como servicio systemd para que arranque solo? [s/N]: ").strip().lower()

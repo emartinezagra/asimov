@@ -12,7 +12,7 @@ cd asimov
 ./install.sh
 ```
 
-Te pedirá el token de Telegram (de [@BotFather](https://t.me/BotFather)) y, al terminar, te preguntará si quieres registrarlo como servicio `systemd` para que arranque solo.
+Te pedirá elegir el estilo de respuesta del bot, el token de Telegram (de [@BotFather](https://t.me/BotFather)) y, al terminar, te preguntará si quieres registrarlo como servicio `systemd` para que arranque solo.
 
 > Por ahora el instalador automático (`install.sh`/`install.py`) solo soporta **Linux**. Para Windows/Mac, sigue la instalación manual de abajo.
 
@@ -53,6 +53,7 @@ Variables disponibles en `.env`:
 | `TELEGRAM_TOKEN` | Token del bot (BotFather) — **obligatorio** | — |
 | `OLLAMA_URL` | URL del servidor Ollama | `http://127.0.0.1:11434` |
 | `CHAT_MODEL` | Modelo de chat a usar | `llama3.2:3b` |
+| `RESPONSE_STYLE` | Estilo de respuesta: `brief`, `technical` o `balanced` | `balanced` |
 | `DB_PATH` | Ruta del SQLite de conversaciones | `./conversations.db` |
 | `MEMORY_DB_PATH` | Ruta del store de ChromaDB | `./memory_db` |
 
@@ -89,6 +90,25 @@ python bot.py
 | `qwen2.5:0.5b` | — |
 
 Si hay GPU NVIDIA, empieza directamente por el modelo más grande; si la máquina tiene menos de 4 núcleos de CPU, empieza un escalón más abajo. A partir de ahí, prueba ese modelo con un prompt real, te dice cuánto ha tardado, y te pregunta si quieres bajar a uno más ligero (S/N) — puedes repetir tantas veces como quieras hasta quedarte con el que prefieras.
+
+## Estilo de respuesta
+
+El bot responde según uno de tres estilos, definidos en [response_styles.py](response_styles.py):
+
+| Opción | Estilo | Texto usado en el prompt |
+|---|---|---|
+| 1 | `brief` | "Responde de forma natural y breve." |
+| 2 | `technical` | "Responde de forma técnica y extensa, aportando todo el detalle posible." |
+| 3 | `balanced` | "Responde de forma equilibrada, sin ser demasiado breve ni demasiado extensa." |
+
+Se elige la primera vez en `install.py`, y se guarda en `.env` como `RESPONSE_STYLE`. Para cambiarlo después:
+
+```bash
+source venv/bin/activate
+python configure.py
+```
+
+`configure.py` actualiza `.env` (sin tocar el resto de variables, como el token) y reinicia el bot automáticamente si está corriendo como servicio `systemd`; si no, te indica cómo reiniciarlo a mano.
 
 ## Logs
 

@@ -13,12 +13,17 @@ from db import (
     add_message, get_recent_messages
 )
 from logging_config import setup_logging
+from response_styles import RESPONSE_STYLES, DEFAULT_RESPONSE_STYLE
 
 load_dotenv()
 logger = setup_logging()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.2:3b")          # cambia esto por el modelo que mejor te fue
+RESPONSE_STYLE_TEXT = RESPONSE_STYLES.get(
+    os.getenv("RESPONSE_STYLE", DEFAULT_RESPONSE_STYLE),
+    RESPONSE_STYLES[DEFAULT_RESPONSE_STYLE]
+)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Falta TELEGRAM_TOKEN. Definilo en un archivo .env (ver .env.example).")
@@ -111,7 +116,7 @@ Conversación reciente (esto es lo más importante para el contexto inmediato):
 
 Mensaje actual del usuario: {user_text}
 
-Responde de forma natural y breve, usando el contexto reciente antes que los recuerdos antiguos si hay conflicto."""
+{RESPONSE_STYLE_TEXT} Usa el contexto reciente antes que los recuerdos antiguos si hay conflicto."""
 
     try:
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
