@@ -61,6 +61,20 @@ def looks_referential(text):
 
 # ---------- Layered prompt construction: [SYS][MEM][STATE][RECENT][USER] ----------
 
+def format_recent(recent):
+    # Tags each Usuario/Tú pair with how many questions ago it was, so the
+    # model doesn't have to count plain alternating lines itself to answer
+    # something like "what did I ask two questions ago?".
+    pairs = [recent[i:i + 2] for i in range(0, len(recent), 2)]
+    total = len(pairs)
+    lines = []
+    for i, pair in enumerate(pairs):
+        turns_ago = total - i
+        tag = f"[hace {turns_ago} pregunta{'s' if turns_ago != 1 else ''}]"
+        for role, content in pair:
+            lines.append(f"{tag} {role}: {truncate(content, HISTORY_SNIPPET_CHARS)}")
+    return "\n".join(lines)
+
 def build_prompt(user_id, conv_id, user_text):
     fecha_actual = datetime.now().strftime("%A %d de %B de %Y, %H:%M")
     parts = [f"[SYS]\nEres un asistente personal. Fecha: {fecha_actual}. {RESPONSE_STYLE_TEXT}"]
@@ -76,8 +90,7 @@ def build_prompt(user_id, conv_id, user_text):
     window = EXPANDED_WINDOW if looks_referential(user_text) else DEFAULT_WINDOW
     recent = get_recent_messages(conv_id, limit=window)
     if recent:
-        recent_block = "\n".join(f"{r}: {truncate(c, HISTORY_SNIPPET_CHARS)}" for r, c in recent)
-        parts.append(f"[RECENT]\n{recent_block}")
+        parts.append(f"[RECENT]\n{format_recent(recent)}")
 
     parts.append(f"[USER]\n{user_text}")
     return "\n\n".join(parts)
