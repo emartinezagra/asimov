@@ -140,6 +140,14 @@ def choose_response_style():
         print("Invalid option.")
 
 
+def detect_timezone():
+    try:
+        with open("/etc/timezone") as f:
+            return f.read().strip() or "Europe/Madrid"
+    except OSError:
+        return "Europe/Madrid"
+
+
 def write_env(telegram_token, chat_model, response_style):
     with open(".env", "w") as f:
         f.write(f"TELEGRAM_TOKEN={telegram_token}\n")
@@ -148,7 +156,16 @@ def write_env(telegram_token, chat_model, response_style):
         f.write(f"CHAT_MODEL={chat_model}\n")
         f.write(f"RESPONSE_STYLE={response_style}\n")
         f.write("DB_PATH=./conversations.db\n")
+        f.write(f"TIMEZONE={detect_timezone()}\n")
+        f.write("CONTACTS=\n")
+        f.write("EMAIL_SMTP_HOST=\n")
+        f.write("EMAIL_SMTP_PORT=587\n")
+        f.write("EMAIL_USER=\n")
+        f.write("EMAIL_PASSWORD=\n")
+        f.write("EMAIL_FROM=\n")
     print(".env created.")
+    print("Reminders and calendar work out of the box. To enable sending emails,")
+    print("edit .env and fill in CONTACTS and the EMAIL_* SMTP settings (see README).")
 
 
 def setup_venv():

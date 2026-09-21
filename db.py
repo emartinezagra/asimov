@@ -65,6 +65,49 @@ def get_conn():
         # it now counts folded turn numbers, so reset it once on upgrade.
         conn.execute("UPDATE conversations SET summarized_up_to = 0")
 
+    # Migration: pending_action, a small JSON blob describing an in-progress
+    # tool call still missing required parameters (e.g. a reminder with no
+    # time yet), so it can be completed on the user's next message.
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN pending_action TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            text TEXT,
+            execute_at TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS calendar_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            title TEXT,
+            start TEXT,
+            duration_minutes INTEGER,
+            attendees TEXT,
+            status TEXT DEFAULT 'active',
+            created_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS email_drafts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            to_email TEXT,
+            to_name TEXT,
+            subject TEXT,
+            body TEXT,
+            status TEXT DEFAULT 'draft',
+            created_at TEXT
+        )
+    """)
+
     return conn
 
 def create_conversation(user_id):
@@ -183,6 +226,143 @@ def update_conversation_state(conv_id, state, summarized_up_to):
         (state.get("topic"), state.get("goal"), state.get("pending"), state.get("note"),
          summarized_up_to, conv_id)
     )
+    conn.commit()
+    conn.close()
+
+def get_pending_action(conv_id):
+    conn = get_conn()
+    row = conn.execute("SELECT pending_action FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_pending_action(conv_id, pending_json):
+    conn = get_conn()
+    conn.execute("UPDATE conversations SET pending_action = ? WHERE id = ?", (pending_json, conv_id))
+    conn.commit()
+    conn.close()
+
+def clear_pending_action(conv_id):
+    set_pending_action(conv_id, None)
+
+# ---------- Reminders ----------
+
+def create_reminder(user_id, text, execute_at_iso):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO reminders (user_id, text, execute_at, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+        (str(user_id), text, execute_at_iso, datetime.now().isoformat())
+    )
+    conn.commit()
+    reminder_id = cur.lastrowid
+    conn.close()
+    return reminder_id
+
+def list_pending_reminders(user_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, text, execute_at FROM reminders WHERE user_id = ? AND status = 'pending' ORDER BY execute_at ASC",
+        (str(user_id),)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def find_pending_reminders_by_text(user_id, text_fragment):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, text, execute_at FROM reminders WHERE user_id = ? AND status = 'pending' "
+        "AND lower(text) LIKE ?",
+        (str(user_id), f"%{text_fragment.lower()}%")
+    ).fetchall()
+    conn.close()
+    return rows
+
+def cancel_reminder(reminder_id):
+    conn = get_conn()
+    conn.execute("UPDATE reminders SET status = 'cancelled' WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+def get_due_reminders(now_iso):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, user_id, text FROM reminders WHERE status = 'pending' AND execute_at <= ?",
+        (now_iso,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def mark_reminder_completed(reminder_id):
+    conn = get_conn()
+    conn.execute("UPDATE reminders SET status = 'completed' WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
+
+# ---------- Calendar ----------
+
+def create_calendar_event(user_id, title, start_iso, duration_minutes, attendees):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO calendar_events (user_id, title, start, duration_minutes, attendees, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, 'active', ?)",
+        (str(user_id), title, start_iso, duration_minutes, ",".join(attendees or []), datetime.now().isoformat())
+    )
+    conn.commit()
+    event_id = cur.lastrowid
+    conn.close()
+    return event_id
+
+def list_active_events(user_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title, start, duration_minutes, attendees FROM calendar_events "
+        "WHERE user_id = ? AND status = 'active' ORDER BY start ASC",
+        (str(user_id),)
+    ).fetchall()
+    conn.close()
+    return rows
+
+def find_active_events_by_title(user_id, title_fragment):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, title, start FROM calendar_events WHERE user_id = ? AND status = 'active' "
+        "AND lower(title) LIKE ?",
+        (str(user_id), f"%{title_fragment.lower()}%")
+    ).fetchall()
+    conn.close()
+    return rows
+
+def cancel_calendar_event(event_id):
+    conn = get_conn()
+    conn.execute("UPDATE calendar_events SET status = 'cancelled' WHERE id = ?", (event_id,))
+    conn.commit()
+    conn.close()
+
+# ---------- Email ----------
+
+def create_email_draft(user_id, to_email, to_name, subject, body):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO email_drafts (user_id, to_email, to_name, subject, body, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, 'draft', ?)",
+        (str(user_id), to_email, to_name, subject, body, datetime.now().isoformat())
+    )
+    conn.commit()
+    draft_id = cur.lastrowid
+    conn.close()
+    return draft_id
+
+def get_email_draft(draft_id, user_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, to_email, to_name, subject, body, status FROM email_drafts WHERE id = ? AND user_id = ?",
+        (draft_id, str(user_id))
+    ).fetchone()
+    conn.close()
+    return row
+
+def mark_email_sent(draft_id):
+    conn = get_conn()
+    conn.execute("UPDATE email_drafts SET status = 'sent' WHERE id = ?", (draft_id,))
     conn.commit()
     conn.close()
 

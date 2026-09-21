@@ -55,6 +55,9 @@ Variables available in `.env`:
 | `CHAT_MODEL` | Chat model to use | `llama3.2:3b` |
 | `RESPONSE_STYLE` | Response style: `brief`, `technical`, or `balanced` | `balanced` |
 | `DB_PATH` | Path to the conversations/state/memory SQLite file | `./conversations.db` |
+| `TIMEZONE` | IANA timezone used to resolve dates/times ("tomorrow at 9", "in 10 minutes"...) | `Europe/Madrid` |
+| `CONTACTS` | `Name:email` pairs, comma-separated, so emails can be sent by first name | (empty) |
+| `EMAIL_SMTP_HOST` / `EMAIL_SMTP_PORT` / `EMAIL_USER` / `EMAIL_PASSWORD` / `EMAIL_FROM` | SMTP credentials for sending email. Leave `EMAIL_SMTP_HOST` empty to disable sending | (empty) |
 
 `.env` is **not** pushed to the repo (it's in `.gitignore`) — each person uses their own token.
 
@@ -111,9 +114,22 @@ python configure.py
 
 `configure.py` updates `.env` (without touching other variables like the token) and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
 
+## Project layout
+
+| File | Responsibility |
+|---|---|
+| `bot.py` | Telegram wiring only: handlers, startup, orchestration. |
+| `context.py` | Builds the layered prompt, resolves references, updates `[STATE]`/`[MEM]`. |
+| `llm.py` | Single wrapper around Ollama's `/api/generate` (used by everything else). |
+| `actions.py` | Validates the model's action JSON, routes it to a tool, templates the reply. |
+| `datetime_utils.py` | Timezone-aware "now", and the only place that validates dates/times. |
+| `scheduler.py` | Polls SQLite for due reminders and delivers them via Telegram. |
+| `db.py` | All SQLite access: conversations, messages, memory, reminders, events, drafts. |
+| `tools/reminders.py`, `tools/calendar.py`, `tools/email.py` | One file per tool; this is where new ones get added. |
+
 ## Context architecture
 
-Conversations are stored as **numbered turns** (one shared `turn_number` per Usuario/Tú pair in `messages`), which lets the system resolve references deterministically instead of asking the model to count. Each message is built in layers (`build_prompt()` in `bot.py`), and **an empty layer is omitted entirely** from the prompt instead of being shown as "no data":
+Conversations are stored as **numbered turns** (one shared `turn_number` per Usuario/Tú pair in `messages`), which lets the system resolve references deterministically instead of asking the model to count. Each message is built in layers (`build_action_prompt()` in `context.py`), and **an empty layer is omitted entirely** from the prompt instead of being shown as "no data":
 
 ```
 [SYS]        Fixed instructions: date + response style. Always present.
@@ -136,14 +152,51 @@ Conversations are stored as **numbered turns** (one shared `turn_number` per Usu
 
 **[RECENT] — dynamic window, turn-tagged.** `DEFAULT_WINDOW_TURNS` (2 turns) by default, expanding to `EXPANDED_WINDOW_TURNS` (4) only as a fallback when no explicit reference resolved but the message still looks context-dependent. Each turn is tagged `[hace N preguntas]` so counting isn't left to the model even within the raw window.
 
-Tunable constants at the top of `bot.py`: `DEFAULT_WINDOW_TURNS`, `EXPANDED_WINDOW_TURNS`, `HISTORY_SNIPPET_CHARS`, `STATE_FIELD_MAX_CHARS`, `FIELD_SANITY_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_TURNS`.
+Tunable constants at the top of `context.py`: `DEFAULT_WINDOW_TURNS`, `EXPANDED_WINDOW_TURNS`, `HISTORY_SNIPPET_CHARS`, `STATE_FIELD_MAX_CHARS`, `FIELD_SANITY_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_TURNS`.
 
 **Known limitation, by design:** references to a sub-part of a compound question (e.g. *"¿cuál era la segunda cosa que te pedí?"*, when a single prior turn asked for two things) aren't resolved by turn lookup — that level of detail is expected to live in `[STATE].pending` instead, captured when that turn gets folded. Going further (parsing sub-requests within a turn) was left out on purpose to avoid over-engineering a local, single-user assistant.
+
+## Actions: reminders, calendar, email
+
+Asimov can do more than chat: it can create/cancel/list reminders, create/cancel/list calendar events, and draft/send emails, all triggered by natural language. Examples: *"Recuérdame sacar el pollo del horno en 10 minutos"*, *"¿Qué recordatorios tengo?"*, *"Pon una reunión con Juan el jueves a las 11 durante una hora"*, *"Escribe un correo a Juan diciéndole que llegaré tarde"* → *"Envíalo"*.
+
+**The core rule: the LLM never executes anything.** Every user message goes through exactly one Ollama call (`context.build_action_prompt()` + `llm.generate(..., json_mode=True)`) that asks the model to output a single, strict JSON object choosing one action (`CHAT`, `REMINDER`, `CANCEL_REMINDER`, `LIST_REMINDERS`, `CALENDAR`, `CANCEL_EVENT`, `LIST_EVENTS`, `EMAIL_DRAFT`, `SEND_EMAIL`) with its parameters — never code, never a tool call the model runs itself. Ollama's `format: "json"` mode constrains the output at generation time, and `actions.parse_action_json()` still never trusts it blindly: invalid JSON or an unrecognized action always falls back to plain `CHAT` with a generic message instead of breaking the conversation.
+
+```
+USER MESSAGE
+     │
+     ▼
+1 Ollama call → {"action": ..., ...params}   (context.build_action_prompt + llm.generate)
+     │
+     ▼
+actions.py validates EVERY field itself (dates, required fields, recipients) —
+the model's own "missing" list is never the only check
+     │
+     ├─ missing something?  → templated question in Python (no 2nd LLM call), stored as
+     │                         conversations.pending_action, so the next message completes it
+     │
+     └─ complete? → tools/*.py executes deterministically against SQLite (or SMTP for email)
+                     → actions.py templates the natural-language reply (no 2nd LLM call either)
+```
+
+**Dates and times are never invented by the model.** `context.build_action_prompt()` gives it `CURRENT_DATETIME`/`TIMEZONE` as ground truth in `[SYS]`; the model may extract a relative delay (`delay_seconds`, for "in 10 minutes") or an absolute datetime (for "tomorrow at 9"), but `datetime_utils.validate_delay_seconds()` / `validate_absolute_datetime()` are the only code that decides whether it's actually usable — rejecting anything unparseable, in the past, or absurdly far in the future (`MAX_HORIZON`, 1 year). A rejected date is treated exactly like a missing one: the user gets asked again.
+
+**Multi-turn completion, still one call per message.** If a message is missing a required field (e.g. a reminder with no time), Python asks a fixed, templated question and stores the partial action as JSON in `conversations.pending_action`. The user's next message doesn't go through the general classifier again — a small, targeted prompt asks the model to extract *only* that missing field, Python re-validates, and either executes or asks again. This keeps every single turn — chat, a fresh action, or completing a pending one — to exactly one Ollama call, never a chain of them.
+
+**Confirmation before sending an email — the one exception.** `EMAIL_DRAFT` only ever creates a draft (`email_drafts` table) and shows it to the user; it's never sent automatically. Sending requires an explicit follow-up, and because this is the one genuinely irreversible action, Asimov spends a second small Ollama call specifically to classify whether the reply confirms sending (`actions._handle_send_confirmation()`) rather than trusting a keyword match — the model can't skip this by emitting `SEND_EMAIL` directly with no draft in play; if there's no pending confirmation, that action is a no-op that asks the user to prepare the draft first.
+
+**Contacts are never invented.** `tools/email.py` resolves a recipient name against the `CONTACTS` env var; if it's already a valid address it's used as-is, and if neither applies, the field is treated as missing and the user is asked for the actual email address — the model can never fabricate one.
+
+**No `time.sleep()`, survives restarts.** Reminders live in the `reminders` SQLite table (`id`, `user_id`, `text`, `execute_at`, `status`). `scheduler.py` registers a `python-telegram-bot` `JobQueue` job (`check_due_reminders`) that polls every 30 seconds for `status='pending'` rows whose `execute_at` has passed, delivers them via `bot.send_message`, and marks them `completed`. Since the state lives in SQLite and not in memory, a restart just resumes polling — anything that came due while the process was down gets delivered on the next tick.
+
+**Calendar is local-only for now**, deliberately: `tools/calendar.py` is the single seam the rest of the app talks to, backed today by the `calendar_events` SQLite table. Wiring it to Google Calendar or Outlook later means changing only that one file.
+
+**Adding a new tool** means: write `tools/<name>.py` with plain functions that talk to `db.py` (or an external API), add its action(s) to `ALLOWED_ACTIONS` and `TOOLS_BLOCK` in `context.py`, add a validator to `VALIDATORS` in `actions.py`, and a branch in `run_action()`. No changes needed anywhere else.
 
 ## Logs
 
 The bot writes logs to `logs/asimov.log`, with automatic rotation (5 MB per file, 3 backups) and also to the console. It logs bot startup, user actions (start, new conversation, messages), and errors (failed Ollama calls, unhandled exceptions). Log files aren't versioned (`logs/*.log*` is in `.gitignore`); only the empty folder is kept in the repo.
 
-Each chat reply also logs Ollama's own timing breakdown (`total`, `load`, `prompt_eval`, `generation`), useful for diagnosing slow replies: if `load` is high, Ollama had to reload the model into memory (see `OLLAMA_KEEP_ALIVE` above); if `generation` dominates, the generated reply is simply very long.
+Every Ollama call also logs its own timing breakdown (`total`, `load`, `prompt_eval`, `generation`), tagged with what it was for (`action-classify:<conv_id>`, `pending-fill:<conv_id>`, `send-confirm:<conv_id>`, `state-extraction`) — useful for diagnosing slow replies: if `load` is high, Ollama had to reload the model into memory (see `OLLAMA_KEEP_ALIVE` above); if `generation` dominates, the generated reply is simply very long.
 
-With `LOG_LEVEL=DEBUG` in `.env` (default `INFO`), it also logs the **full prompt** sent to Ollama on every message — useful for seeing exactly what context (memory + history) is actually being injected.
+With `LOG_LEVEL=DEBUG` in `.env` (default `INFO`), it also logs the **full prompt** sent to Ollama on every message — useful for seeing exactly what context (memory + history + tool definitions) is actually being injected.
