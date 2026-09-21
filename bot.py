@@ -9,8 +9,8 @@ from telegram.ext import (
 )
 from memory import add_memory, search_memory
 from db import (
-    create_conversation, list_conversations, set_title_if_missing,
-    add_message, get_recent_messages
+    create_conversation, list_conversations, list_known_users,
+    set_title_if_missing, add_message, get_recent_messages
 )
 from logging_config import setup_logging
 from response_styles import RESPONSE_STYLES, DEFAULT_RESPONSE_STYLE
@@ -37,20 +37,33 @@ pending_reminders = {}     # simple, en RAM
 
 # ---------- /start: elegir nueva o continuar ----------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    logger.info(f"User {user_id} opened /start")
+def build_start_menu(user_id):
     conversations = list_conversations(user_id, limit=5)
-
     buttons = [[InlineKeyboardButton("🆕 Nueva conversación", callback_data="new")]]
     for conv_id, title, created_at in conversations:
         label = title if title else f"(vacía) {created_at[:16]}"
         buttons.append([InlineKeyboardButton(f"📂 {label}", callback_data=f"load:{conv_id}")])
+    return InlineKeyboardMarkup(buttons)
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    logger.info(f"User {user_id} opened /start")
     await update.message.reply_text(
         "¿Quieres empezar una conversación nueva o continuar una anterior?",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        reply_markup=build_start_menu(user_id)
     )
+
+async def announce_start_menu(application):
+    for user_id in list_known_users():
+        try:
+            await application.bot.send_message(
+                chat_id=user_id,
+                text="El bot se ha reiniciado. ¿Quieres empezar una conversación nueva o continuar una anterior?",
+                reply_markup=build_start_menu(user_id)
+            )
+            logger.info(f"Sent startup menu to user {user_id}")
+        except Exception:
+            logger.error(f"Failed to send startup menu to user {user_id}", exc_info=True)
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -159,7 +172,7 @@ Mensaje actual del usuario: {user_text}
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled exception while processing an update", exc_info=context.error)
 
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(announce_start_menu).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(handle_button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -40,6 +40,12 @@ def create_conversation(user_id):
     conn.close()
     return conv_id
 
+def list_known_users():
+    conn = get_conn()
+    rows = conn.execute("SELECT DISTINCT user_id FROM conversations").fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
 def list_conversations(user_id, limit=5):
     conn = get_conn()
     rows = conn.execute(
