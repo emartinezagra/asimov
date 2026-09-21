@@ -121,6 +121,12 @@ Cada mensaje se envía a Ollama junto con recuerdos relevantes (RAG) y los últi
 
 Además, `MEMORY_MAX_DISTANCE` (en `.env`, sin definir por defecto) descarta recuerdos poco relevantes para la pregunta actual en vez de inyectar siempre los `MEMORY_RESULTS` más cercanos aunque no vengan al caso. ChromaDB devuelve una distancia por cada recuerdo candidato (más bajo = más relevante); `search_memory()` la usa para filtrar. El log (`Memory candidate distances for user ...`) muestra esos valores reales en cada mensaje, para que calibres el umbral con datos de tu propio uso en vez de un número arbitrario.
 
+### Resumen progresivo
+
+`HISTORY_MESSAGES` solo mantiene en crudo los últimos turnos de la conversación — pero en vez de simplemente descartar lo anterior, se va condensando en un resumen. Cuando se acumulan `SUMMARY_BATCH_SIZE` (6) mensajes que ya han salido de esa ventana reciente y aún no están resumidos, `maybe_update_summary()` le pide al propio modelo que los condense (integrando el resumen previo si lo había) y lo guarda en `conversations.summary`. Ese resumen se incluye en el prompt junto al historial reciente, en vez de la conversación completa en crudo.
+
+Esto añade una llamada extra a Ollama, pero solo cada `SUMMARY_BATCH_SIZE` mensajes (no en cada uno), y ocurre **después** de responderte, así que no añade espera a la respuesta que recibes. `SUMMARY_MAX_CHARS` (600) acota además el tamaño del resumen ya guardado al incluirlo en el prompt.
+
 ## Logs
 
 El bot escribe logs (en inglés) a `logs/asimov.log`, con rotación automática (5 MB por fichero, 3 copias de respaldo) y también por consola. Se registran arranque del bot, acciones de usuario (start, nueva conversación, mensajes) y errores (fallos al llamar a Ollama, excepciones no controladas). Los ficheros de log no se versionan (`logs/*.log*` está en `.gitignore`); solo se mantiene la carpeta vacía en el repo.

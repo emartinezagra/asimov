@@ -10,7 +10,9 @@ from telegram.ext import (
 from memory import add_memory, search_memory
 from db import (
     create_conversation, list_conversations, list_known_users,
-    set_title_if_missing, add_message, get_recent_messages
+    set_title_if_missing, add_message, get_recent_messages,
+    count_messages, get_conversation_summary_state,
+    update_conversation_summary, get_messages_range
 )
 from logging_config import setup_logging
 from response_styles import RESPONSE_STYLES, DEFAULT_RESPONSE_STYLE
@@ -39,6 +41,13 @@ MEMORY_SNIPPET_CHARS = 300
 HISTORY_MESSAGES = 6
 HISTORY_SNIPPET_CHARS = 300
 MEMORY_STORE_CHARS = 500  # también se recorta lo que se guarda, para que no siga creciendo
+
+# Resumen progresivo: los mensajes que quedan fuera de la ventana de HISTORY_MESSAGES
+# se van condensando en un resumen (guardado en conversations.summary) en vez de
+# arrastrarse en crudo para siempre. Se dispara cuando se acumulan SUMMARY_BATCH_SIZE
+# mensajes "viejos" sin resumir todavía.
+SUMMARY_BATCH_SIZE = 6
+SUMMARY_MAX_CHARS = 600
 
 # Si se define, descarta recuerdos cuya distancia (ChromaDB) sea mayor que este valor
 # — es decir, poco relevantes para la pregunta actual. Sin definir, se usan siempre
@@ -107,6 +116,41 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Sending reminder to chat {job.chat_id}")
     await context.bot.send_message(chat_id=job.chat_id, text=job.data)
 
+# ---------- Resumen progresivo ----------
+
+async def maybe_update_summary(conv_id):
+    total = count_messages(conv_id)
+    existing_summary, summarized_up_to = get_conversation_summary_state(conv_id)
+    foldable = total - HISTORY_MESSAGES - summarized_up_to
+
+    if foldable < SUMMARY_BATCH_SIZE:
+        return
+
+    to_fold = get_messages_range(conv_id, offset=summarized_up_to, limit=foldable)
+    transcript = "\n".join(f"{r}: {c}" for r, c in to_fold)
+
+    summary_prompt = f"""Condensa en pocas frases, en tercera persona, lo esencial de este fragmento \
+de conversación entre un usuario y un asistente. Si hay un resumen previo, intégralo sin repetirlo.
+
+Resumen previo: {existing_summary or "(ninguno)"}
+
+Fragmento a condensar:
+{transcript}
+
+Resumen actualizado (máximo 5-6 frases):"""
+
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+            "model": CHAT_MODEL, "prompt": summary_prompt, "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE
+        })
+        resp.raise_for_status()
+        new_summary = resp.json()["response"].strip()
+        update_conversation_summary(conv_id, new_summary, summarized_up_to + foldable)
+        logger.info(f"Updated summary for conversation {conv_id} (folded {foldable} messages)")
+    except Exception:
+        logger.error(f"Failed to update summary for conversation {conv_id}", exc_info=True)
+
 # ---------- Mensajes normales ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,12 +187,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history_block = "\n".join(f"{r}: {truncate(c, HISTORY_SNIPPET_CHARS)}" for r, c in recent) \
         if recent else "Inicio de la conversación."
 
+    # Resumen progresivo de lo que ya quedó fuera de la ventana reciente
+    conv_summary, _ = get_conversation_summary_state(conv_id)
+    summary_block = truncate(conv_summary, SUMMARY_MAX_CHARS) if conv_summary else "Sin resumen todavía."
+
     fecha_actual = datetime.now().strftime("%A %d de %B de %Y, %H:%M")
 
     prompt = f"""Eres un asistente personal. Hoy es {fecha_actual}.
 
 Recuerdos relevantes de conversaciones pasadas (puede que no todos apliquen):
 {memory_block}
+
+Resumen de lo hablado anteriormente en esta conversación (antes de la ventana reciente):
+{summary_block}
 
 Conversación reciente (esto es lo más importante para el contexto inmediato):
 {history_block}
@@ -190,6 +241,8 @@ Mensaje actual del usuario: {user_text}
 
     logger.info(f"Replied to user {user_id} in conversation {conv_id}")
     await update.message.reply_text(answer)
+
+    await maybe_update_summary(conv_id)
 
 # ---------- Arranque ----------
 

@@ -27,6 +27,15 @@ def get_conn():
             timestamp TEXT
         )
     """)
+    # Migración para bases de datos creadas antes de añadir el resumen progresivo.
+    for stmt in (
+        "ALTER TABLE conversations ADD COLUMN summary TEXT",
+        "ALTER TABLE conversations ADD COLUMN summarized_up_to INTEGER DEFAULT 0",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # la columna ya existe
     return conn
 
 def create_conversation(user_id):
@@ -81,3 +90,39 @@ def get_recent_messages(conv_id, limit=8):
     ).fetchall()
     conn.close()
     return list(reversed(rows))  # orden cronológico
+
+def count_messages(conv_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conv_id,)
+    ).fetchone()
+    conn.close()
+    return row[0]
+
+def get_conversation_summary_state(conv_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT summary, summarized_up_to FROM conversations WHERE id = ?", (conv_id,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None, 0
+    return row[0], row[1] or 0
+
+def update_conversation_summary(conv_id, summary, summarized_up_to):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE conversations SET summary = ?, summarized_up_to = ? WHERE id = ?",
+        (summary, summarized_up_to, conv_id)
+    )
+    conn.commit()
+    conn.close()
+
+def get_messages_range(conv_id, offset, limit):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC LIMIT ? OFFSET ?",
+        (conv_id, limit, offset)
+    ).fetchall()
+    conn.close()
+    return rows
