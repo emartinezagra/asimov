@@ -52,6 +52,7 @@ Variables disponibles en `.env`:
 |---|---|---|
 | `TELEGRAM_TOKEN` | Token del bot (BotFather) — **obligatorio** | — |
 | `OLLAMA_URL` | URL del servidor Ollama | `http://127.0.0.1:11434` |
+| `OLLAMA_KEEP_ALIVE` | Cuánto mantiene Ollama el modelo cargado en RAM tras cada uso (`-1` = no descargar nunca) | `30m` |
 | `CHAT_MODEL` | Modelo de chat a usar | `llama3.2:3b` |
 | `RESPONSE_STYLE` | Estilo de respuesta: `brief`, `technical` o `balanced` | `balanced` |
 | `DB_PATH` | Ruta del SQLite de conversaciones | `./conversations.db` |
@@ -113,3 +114,5 @@ python configure.py
 ## Logs
 
 El bot escribe logs (en inglés) a `logs/asimov.log`, con rotación automática (5 MB por fichero, 3 copias de respaldo) y también por consola. Se registran arranque del bot, acciones de usuario (start, nueva conversación, mensajes) y errores (fallos al llamar a Ollama, excepciones no controladas). Los ficheros de log no se versionan (`logs/*.log*` está en `.gitignore`); solo se mantiene la carpeta vacía en el repo.
+
+Cada respuesta del chat también registra el desglose de tiempos que devuelve Ollama (`total`, `load`, `prompt_eval`, `generation`), útil para diagnosticar respuestas lentas: si `load` es alto, es que Ollama tuvo que recargar el modelo en memoria (ver `OLLAMA_KEEP_ALIVE` arriba); si `generation` es el que domina, es que la respuesta generada es simplemente muy larga.

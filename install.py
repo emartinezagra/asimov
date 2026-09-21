@@ -144,6 +144,7 @@ def write_env(telegram_token, chat_model, response_style):
     with open(".env", "w") as f:
         f.write(f"TELEGRAM_TOKEN={telegram_token}\n")
         f.write(f"OLLAMA_URL={OLLAMA_URL}\n")
+        f.write("OLLAMA_KEEP_ALIVE=30m\n")
         f.write(f"CHAT_MODEL={chat_model}\n")
         f.write(f"RESPONSE_STYLE={response_style}\n")
         f.write("DB_PATH=./conversations.db\n")

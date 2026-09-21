@@ -7,6 +7,7 @@ logger = setup_logging()
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 EMBED_MODEL = "nomic-embed-text"
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 
 MEMORY_DB_PATH = os.getenv(
     "MEMORY_DB_PATH",
@@ -18,7 +19,9 @@ collection = client.get_or_create_collection("memory")
 
 def embed(text):
     try:
-        resp = requests.post(f"{OLLAMA_URL}/api/embeddings", json={"model": EMBED_MODEL, "prompt": text})
+        resp = requests.post(f"{OLLAMA_URL}/api/embeddings", json={
+            "model": EMBED_MODEL, "prompt": text, "keep_alive": OLLAMA_KEEP_ALIVE
+        })
         resp.raise_for_status()
         return resp.json()["embedding"]
     except Exception:

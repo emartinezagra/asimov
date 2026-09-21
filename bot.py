@@ -20,6 +20,10 @@ logger = setup_logging()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.2:3b")          # cambia esto por el modelo que mejor te fue
+# Cuánto tiempo mantiene Ollama el modelo cargado en memoria tras cada petición.
+# Por defecto Ollama lo descarga a los 5 minutos de inactividad, lo que fuerza
+# una recarga lenta (sobre todo sin GPU) en la siguiente petición.
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 RESPONSE_STYLE_TEXT = RESPONSE_STYLES.get(
     os.getenv("RESPONSE_STYLE", DEFAULT_RESPONSE_STYLE),
     RESPONSE_STYLES[DEFAULT_RESPONSE_STYLE]
@@ -120,10 +124,22 @@ Mensaje actual del usuario: {user_text}
 
     try:
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-            "model": CHAT_MODEL, "prompt": prompt, "stream": False
+            "model": CHAT_MODEL, "prompt": prompt, "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE
         })
         resp.raise_for_status()
-        answer = resp.json()["response"]
+        data = resp.json()
+        answer = data["response"]
+        load_s = data.get("load_duration", 0) / 1e9
+        eval_s = data.get("eval_duration", 0) / 1e9
+        prompt_eval_s = data.get("prompt_eval_duration", 0) / 1e9
+        total_s = data.get("total_duration", 0) / 1e9
+        logger.info(
+            f"Ollama timing for conversation {conv_id}: "
+            f"total={total_s:.1f}s load={load_s:.1f}s "
+            f"prompt_eval={prompt_eval_s:.1f}s generation={eval_s:.1f}s "
+            f"tokens={data.get('eval_count', 0)}"
+        )
     except Exception:
         logger.error(f"Ollama request failed for conversation {conv_id}", exc_info=True)
         await update.message.reply_text("Ha ocurrido un error generando la respuesta. Inténtalo de nuevo.")
