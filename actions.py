@@ -60,17 +60,40 @@ def parse_action_json(raw_text):
     return data
 
 
+_ACTION_KEY_ALIASES = ("type", "intent")
+
+
 def _normalize_action_shape(data):
-    """Recovers from a common small-model mistake: wrapping the action name
-    as a key instead of putting it under "action", e.g.
-    {"CHAT": {"message": "..."}} instead of {"action": "CHAT", "message": "..."}.
-    Only touches that exact single-key shape — anything else is left alone
-    for the normal validation path to reject."""
-    if not isinstance(data, dict) or "action" in data or len(data) != 1:
+    """Recovers from small-model formatting drift without loosening what's
+    actually trusted: only known field/action names get remapped case- or
+    alias-insensitively, everything else still falls through to strict
+    validation and, ultimately, the safe CHAT fallback."""
+    if not isinstance(data, dict):
         return data
-    key, value = next(iter(data.items()))
-    if key in ALLOWED_ACTIONS and isinstance(value, dict):
-        return {"action": key, **value}
+
+    # Case drift: "TYPE"/"Query" instead of "type"/"query".
+    data = {(k.lower() if isinstance(k, str) else k): v for k, v in data.items()}
+
+    # Key drift: "type"/"intent" used instead of "action".
+    if "action" not in data:
+        for alias in _ACTION_KEY_ALIASES:
+            if alias in data:
+                data["action"] = data.pop(alias)
+                break
+
+    # Shape drift: the action name used as the single wrapping key, e.g.
+    # {"chat": {"message": "..."}} instead of {"action": "CHAT", "message": "..."}.
+    if "action" not in data and len(data) == 1:
+        key, value = next(iter(data.items()))
+        if isinstance(key, str) and key.upper() in ALLOWED_ACTIONS and isinstance(value, dict):
+            inner = {(k.lower() if isinstance(k, str) else k): v for k, v in value.items()}
+            data = {"action": key.upper(), **inner}
+
+    # Value drift: the action name in the wrong case, e.g. "action": "chat".
+    action_value = data.get("action")
+    if isinstance(action_value, str) and action_value.upper() in ALLOWED_ACTIONS:
+        data["action"] = action_value.upper()
+
     return data
 
 

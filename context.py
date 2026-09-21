@@ -66,7 +66,10 @@ WEB_SEARCH(query)
 
 Usa "missing" (lista de campos que faltan) si no tienes toda la información necesaria para REMINDER, CALENDAR o EMAIL_DRAFT. No inventes fechas, horas ni destinatarios: si no los tienes, decláralos en "missing".
 REMEMBER es solo para hechos duraderos que el usuario pide explícitamente recordar (preferencias, datos personales, proyectos); nunca para contraseñas, tokens ni datos bancarios.
-En WEATHER, "date" es opcional (por defecto hoy) y debe ser una fecha AAAA-MM-DD si se indica un día concreto."""
+En WEATHER, "date" es opcional (por defecto hoy) y debe ser una fecha AAAA-MM-DD si se indica un día concreto.
+La clave del nombre de la acción es siempre exactamente "action", en minúscula, con ese valor en mayúsculas. Ejemplos:
+{"action": "CHAT", "message": "¿Qué tal?"}
+{"action": "WEB_SEARCH", "query": "mejores películas de los 80"}"""
 
 
 def truncate(text, max_chars):
