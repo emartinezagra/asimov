@@ -26,9 +26,9 @@ def setup_logging(level=None):
         root.addHandler(file_handler)
         root.addHandler(console_handler)
 
-    # Siempre se reevalúa el nivel: memory.py llama a setup_logging() al
-    # importarse, antes de que bot.py ejecute load_dotenv(), así que la
-    # primera llamada puede no ver aún LOG_LEVEL del .env.
+    # Always re-applied: if some module ever calls setup_logging() at import
+    # time (before load_dotenv() runs), that first call won't see LOG_LEVEL
+    # from .env yet, so the level must be re-evaluated on every call.
     root.setLevel(level)
 
     return logging.getLogger("asimov")

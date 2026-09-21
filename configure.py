@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cambia el estilo de respuesta de Asimov (guardado en .env) y reinicia el bot."""
+"""Change Asimov's response style (stored in .env) and restart the bot."""
 import os
 import subprocess
 import sys
@@ -29,32 +29,32 @@ def write_env(values):
 
 
 def choose_response_style(current):
-    print("Estilo de respuesta actual:", RESPONSE_STYLE_LABELS.get(current, current))
-    print("\nElige el nuevo estilo de respuesta del bot:")
+    print("Current response style:", RESPONSE_STYLE_LABELS.get(current, current))
+    print("\nChoose the bot's new response style:")
     for i, key in enumerate(RESPONSE_STYLE_ORDER, start=1):
-        marker = " (actual)" if key == current else ""
+        marker = " (current)" if key == current else ""
         print(f"  {i}. {RESPONSE_STYLE_LABELS[key]}{marker}")
     while True:
-        choice = input(f"Opción [1-{len(RESPONSE_STYLE_ORDER)}]: ").strip()
+        choice = input(f"Option [1-{len(RESPONSE_STYLE_ORDER)}]: ").strip()
         if choice.isdigit() and 1 <= int(choice) <= len(RESPONSE_STYLE_ORDER):
             return RESPONSE_STYLE_ORDER[int(choice) - 1]
-        print("Opción no válida.")
+        print("Invalid option.")
 
 
 def restart_bot():
     if os.path.exists(SYSTEMD_UNIT_PATH):
-        print("\nReiniciando servicio systemd 'asimov'...")
+        print("\nRestarting systemd service 'asimov'...")
         subprocess.run(["sudo", "systemctl", "restart", "asimov"], check=True)
-        print("Hecho.")
+        print("Done.")
     else:
-        print("\nNo se ha encontrado el servicio systemd de Asimov.")
-        print("Si lo tienes corriendo en tmux/screen, reinícialo manualmente:")
-        print("  tmux attach -t asimov   # Ctrl+C para pararlo, luego: python bot.py")
+        print("\nAsimov's systemd service wasn't found.")
+        print("If you're running it in tmux/screen, restart it manually:")
+        print("  tmux attach -t asimov   # Ctrl+C to stop it, then: python bot.py")
 
 
 def main():
     if not os.path.exists(ENV_PATH):
-        print(".env no encontrado. Ejecuta primero install.py.")
+        print(".env not found. Run install.py first.")
         sys.exit(1)
 
     values = read_env()
@@ -63,7 +63,7 @@ def main():
     new_style = choose_response_style(current_style)
     values["RESPONSE_STYLE"] = new_style
     write_env(values)
-    print(f"\nEstilo actualizado a: {RESPONSE_STYLE_LABELS[new_style]}")
+    print(f"\nStyle updated to: {RESPONSE_STYLE_LABELS[new_style]}")
 
     restart_bot()
 

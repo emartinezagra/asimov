@@ -27,8 +27,8 @@ def get_conn():
             timestamp TEXT
         )
     """)
-    # "summary" almacena el STATE (estado compacto de la conversación: tema,
-    # entidades, decisiones, tareas pendientes), no un resumen narrativo largo.
+    # "summary" stores the STATE (compact conversation state: topic, entities,
+    # decisions, pending tasks), not a long narrative summary.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS user_facts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +37,7 @@ def get_conn():
             created_at TEXT
         )
     """)
-    # Migración para bases de datos creadas antes de añadir el resumen progresivo.
+    # Migration for databases created before progressive summarization was added.
     for stmt in (
         "ALTER TABLE conversations ADD COLUMN summary TEXT",
         "ALTER TABLE conversations ADD COLUMN summarized_up_to INTEGER DEFAULT 0",
@@ -45,7 +45,7 @@ def get_conn():
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError:
-            pass  # la columna ya existe
+            pass  # column already exists
     return conn
 
 def create_conversation(user_id):
@@ -99,7 +99,7 @@ def get_recent_messages(conv_id, limit=8):
         (conv_id, limit)
     ).fetchall()
     conn.close()
-    return list(reversed(rows))  # orden cronológico
+    return list(reversed(rows))  # chronological order
 
 def count_messages(conv_id):
     conn = get_conn()

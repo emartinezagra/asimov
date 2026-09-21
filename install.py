@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Instalador de Asimov: prepara un bot de Telegram local sobre Ollama,
-partiendo de un modelo acorde al hardware y dejando que el usuario decida,
-midiendo el tiempo real, si quiere bajar a uno más ligero.
+Asimov installer: sets up a local Telegram bot on top of Ollama, starting
+from a model that fits the hardware and letting the user decide, based on
+real measured timing, whether to drop to a lighter one.
 """
 import json
 import os
@@ -18,8 +18,8 @@ from response_styles import RESPONSE_STYLE_LABELS, RESPONSE_STYLE_ORDER, DEFAULT
 OLLAMA_URL = "http://127.0.0.1:11434"
 BENCHMARK_PROMPT = "Responde solo con la palabra 'ok'."
 
-# De mayor/mejor a menor/más rápido. El instalador elige un punto de
-# partida según RAM/CPU/GPU y va bajando de nivel si el usuario lo pide.
+# From largest/best to smallest/fastest. The installer picks a starting point
+# based on RAM/CPU/GPU and steps down a tier if the user asks for it.
 MODEL_TIERS = [
     {"name": "llama3.1:8b",  "min_ram_gb": 16},
     {"name": "mistral:7b",   "min_ram_gb": 12},
@@ -40,7 +40,7 @@ def detect_ram_gb():
                 for line in f:
                     if line.startswith("MemTotal:"):
                         return int(line.split()[1]) / (1024 ** 2)
-        return 4.0  # estimación conservadora si no se puede detectar
+        return 4.0  # conservative estimate if it can't be detected
 
 
 def detect_cpu_cores():
@@ -59,31 +59,31 @@ def initial_tier_index(ram_gb, cpu_cores, gpu):
     idx = next((i for i, t in enumerate(MODEL_TIERS) if ram_gb >= t["min_ram_gb"]),
                len(MODEL_TIERS) - 1)
     if gpu:
-        idx = 0  # con GPU dedicada, el modelo más grande suele ir sobrado
+        idx = 0  # with a dedicated GPU, the largest model is usually comfortable
     elif cpu_cores < 4:
-        idx = min(idx + 1, len(MODEL_TIERS) - 1)  # pocos núcleos: empezar más ligero
+        idx = min(idx + 1, len(MODEL_TIERS) - 1)  # few cores: start lighter
     return idx
 
 
 def ensure_ollama_installed():
     if shutil.which("ollama"):
-        print("Ollama ya está instalado.")
+        print("Ollama is already installed.")
         return
     system = platform.system()
     if system == "Linux":
-        print("Instalando Ollama (script oficial de ollama.com)...")
+        print("Installing Ollama (official ollama.com script)...")
         subprocess.run("curl -fsSL https://ollama.com/install.sh | sh", shell=True, check=True)
     elif system == "Darwin":
-        print("Instala Ollama manualmente desde https://ollama.com/download y vuelve a ejecutar este instalador.")
+        print("Install Ollama manually from https://ollama.com/download and re-run this installer.")
         sys.exit(1)
     else:
-        print(f"SO no soportado todavía por este instalador: {system}.")
-        print("Instala Ollama manualmente desde https://ollama.com/download.")
+        print(f"This installer doesn't support this OS yet: {system}.")
+        print("Install Ollama manually from https://ollama.com/download.")
         sys.exit(1)
 
 
 def ollama_pull(model):
-    print(f"  Descargando {model}...")
+    print(f"  Downloading {model}...")
     subprocess.run(["ollama", "pull", model], check=True)
 
 
@@ -98,7 +98,7 @@ def benchmark(model):
         with urllib.request.urlopen(req, timeout=BENCHMARK_TIMEOUT_SECONDS) as resp:
             resp.read()
     except Exception as e:
-        print(f"  Error probando {model}: {e}")
+        print(f"  Error testing {model}: {e}")
         return None
     return time.time() - start
 
@@ -111,33 +111,33 @@ def choose_chat_model(ram_gb, cpu_cores, gpu):
         elapsed = benchmark(model)
         if elapsed is None:
             if idx == len(MODEL_TIERS) - 1:
-                print("No se pudo probar ningún modelo. Revisa que Ollama esté corriendo.")
+                print("Couldn't test any model. Check that Ollama is running.")
                 sys.exit(1)
             idx += 1
             continue
 
-        print(f"Con el modelo actual ({model}) el sistema tarda {elapsed:.1f} segundos en contestar.")
+        print(f"With the current model ({model}) the system takes {elapsed:.1f} seconds to reply.")
 
         if idx == len(MODEL_TIERS) - 1:
-            print("Ya es el modelo más ligero disponible.")
+            print("This is already the lightest model available.")
             return model
 
-        answer = input("¿Probamos con uno más ligero? [S/N]: ").strip().lower()
-        if answer == "s":
+        answer = input("Try a lighter one? [y/N]: ").strip().lower()
+        if answer == "y":
             idx += 1
             continue
         return model
 
 
 def choose_response_style():
-    print("\nElige el estilo de respuesta del bot:")
+    print("\nChoose the bot's response style:")
     for i, key in enumerate(RESPONSE_STYLE_ORDER, start=1):
         print(f"  {i}. {RESPONSE_STYLE_LABELS[key]}")
     while True:
-        choice = input(f"Opción [1-{len(RESPONSE_STYLE_ORDER)}]: ").strip()
+        choice = input(f"Option [1-{len(RESPONSE_STYLE_ORDER)}]: ").strip()
         if choice.isdigit() and 1 <= int(choice) <= len(RESPONSE_STYLE_ORDER):
             return RESPONSE_STYLE_ORDER[int(choice) - 1]
-        print("Opción no válida.")
+        print("Invalid option.")
 
 
 def write_env(telegram_token, chat_model, response_style):
@@ -148,16 +148,16 @@ def write_env(telegram_token, chat_model, response_style):
         f.write(f"CHAT_MODEL={chat_model}\n")
         f.write(f"RESPONSE_STYLE={response_style}\n")
         f.write("DB_PATH=./conversations.db\n")
-    print(".env creado.")
+    print(".env created.")
 
 
 def setup_venv():
     if not os.path.isdir("venv"):
-        print("Creando entorno virtual...")
+        print("Creating virtual environment...")
         subprocess.run([sys.executable, "-m", "venv", "venv"], check=True)
     pip = os.path.join("venv", "bin", "pip") if platform.system() != "Windows" \
         else os.path.join("venv", "Scripts", "pip.exe")
-    print("Instalando dependencias...")
+    print("Installing dependencies...")
     subprocess.run([pip, "install", "-r", "requirements.txt"], check=True)
 
 
@@ -181,17 +181,17 @@ WantedBy=multi-user.target
     unit_path = os.path.join(workdir, "asimov.service")
     with open(unit_path, "w") as f:
         f.write(unit)
-    print(f"\nGenerado {unit_path}. Para activarlo como servicio:")
+    print(f"\nGenerated {unit_path}. To enable it as a service:")
     print(f"  sudo cp {unit_path} /etc/systemd/system/asimov.service")
     print("  sudo systemctl daemon-reload")
     print("  sudo systemctl enable --now asimov")
 
 
 def main():
-    print("=== Instalador de Asimov ===\n")
+    print("=== Asimov installer ===\n")
 
     if platform.system() != "Linux":
-        print(f"Este instalador solo soporta Linux por ahora (detectado: {platform.system()}).")
+        print(f"This installer only supports Linux for now (detected: {platform.system()}).")
         sys.exit(1)
 
     ensure_ollama_installed()
@@ -199,26 +199,26 @@ def main():
     ram_gb = detect_ram_gb()
     cpu_cores = detect_cpu_cores()
     gpu = has_nvidia_gpu()
-    print(f"RAM detectada: {ram_gb:.1f} GB | CPU: {cpu_cores} núcleos | GPU NVIDIA: {'sí' if gpu else 'no'}\n")
+    print(f"Detected RAM: {ram_gb:.1f} GB | CPU: {cpu_cores} cores | NVIDIA GPU: {'yes' if gpu else 'no'}\n")
 
     chat_model = choose_chat_model(ram_gb, cpu_cores, gpu)
-    print(f"\nModelo de chat elegido: {chat_model}\n")
+    print(f"\nChosen chat model: {chat_model}\n")
 
     response_style = choose_response_style()
 
-    token = input("Introduce tu token de Telegram (de @BotFather): ").strip()
+    token = input("Enter your Telegram token (from @BotFather): ").strip()
     if not token:
-        print("Token vacío, abortando.")
+        print("Empty token, aborting.")
         sys.exit(1)
 
     write_env(token, chat_model, response_style)
     setup_venv()
 
-    as_service = input("\n¿Configurar como servicio systemd para que arranque solo? [s/N]: ").strip().lower()
-    if as_service == "s":
+    as_service = input("\nSet it up as a systemd service so it starts on its own? [y/N]: ").strip().lower()
+    if as_service == "y":
         write_systemd_service()
 
-    print("\nInstalación completa. Para arrancar el bot manualmente:")
+    print("\nInstallation complete. To start the bot manually:")
     print("  source venv/bin/activate")
     print("  python bot.py")
 

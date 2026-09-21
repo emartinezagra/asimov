@@ -1,10 +1,10 @@
 # Asimov
 
-Bot de Telegram con memoria persistente estructurada y resumen progresivo de conversación (todo en SQLite), pensado para correr en local contra [Ollama](https://ollama.com) u otro LLM compatible con su API, y optimizado para dar la mejor calidad posible con el mínimo de tokens de contexto — especialmente pensado para modelos pequeños como Llama 3.2 3B.
+Telegram bot with structured persistent memory and progressive conversation summarization (all in SQLite), designed to run locally against [Ollama](https://ollama.com) or any Ollama-compatible LLM API, and optimized for the best possible quality with the minimum context tokens — built with small models like Llama 3.2 3B specifically in mind.
 
-## Instalación rápida (recomendada)
+## Quick install (recommended)
 
-Requiere solo Python 3 y `curl`. El instalador se encarga del resto: instala Ollama si falta, detecta RAM/CPU/GPU de la máquina para elegir un modelo de partida, y te muestra el tiempo de respuesta real de cada uno preguntándote si quieres probar uno más ligero.
+Only needs Python 3 and `curl`. The installer handles the rest: installs Ollama if missing, detects the machine's RAM/CPU/GPU to pick a starting model, and shows you the real response time of each one, asking whether you want to try a lighter one.
 
 ```bash
 git clone https://github.com/emartinezagra/asimov.git
@@ -12,75 +12,75 @@ cd asimov
 ./install.sh
 ```
 
-Te pedirá elegir el estilo de respuesta del bot, el token de Telegram (de [@BotFather](https://t.me/BotFather)) y, al terminar, te preguntará si quieres registrarlo como servicio `systemd` para que arranque solo.
+It will ask you to choose the bot's response style, your Telegram token (from [@BotFather](https://t.me/BotFather)), and at the end whether you want to register it as a `systemd` service so it starts on its own.
 
-> Por ahora el instalador automático (`install.sh`/`install.py`) solo soporta **Linux**. Para Windows/Mac, sigue la instalación manual de abajo.
+> The automatic installer (`install.sh`/`install.py`) only supports **Linux** for now. For Windows/Mac, follow the manual installation below.
 
-## Instalación manual
+## Manual installation
 
-### Requisitos
+### Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com) corriendo en local (`http://127.0.0.1:11434` por defecto), con el modelo de chat que vayas a usar:
+- [Ollama](https://ollama.com) running locally (`http://127.0.0.1:11434` by default), with the chat model you'll use:
   ```bash
   ollama pull llama3.2:3b
   ```
-- Un token de bot de Telegram (se obtiene hablando con [@BotFather](https://t.me/BotFather))
+- A Telegram bot token (get one by talking to [@BotFather](https://t.me/BotFather))
 
-### Pasos
+### Steps
 
 ```bash
 git clone https://github.com/emartinezagra/asimov.git
 cd asimov
 
 python3 -m venv venv
-source venv/bin/activate      # en Windows: venv\Scripts\activate
+source venv/bin/activate      # on Windows: venv\Scripts\activate
 
 pip install -r requirements.txt
 ```
 
-Copia la plantilla de variables de entorno y edítala con tu token:
+Copy the environment variable template and fill in your token:
 
 ```bash
 cp .env.example .env
 ```
 
-Variables disponibles en `.env`:
+Variables available in `.env`:
 
-| Variable | Descripción | Por defecto |
+| Variable | Description | Default |
 |---|---|---|
-| `TELEGRAM_TOKEN` | Token del bot (BotFather) — **obligatorio** | — |
-| `OLLAMA_URL` | URL del servidor Ollama | `http://127.0.0.1:11434` |
-| `OLLAMA_KEEP_ALIVE` | Cuánto mantiene Ollama el modelo cargado en RAM tras cada uso (`-1` = no descargar nunca) | `30m` |
-| `CHAT_MODEL` | Modelo de chat a usar | `llama3.2:3b` |
-| `RESPONSE_STYLE` | Estilo de respuesta: `brief`, `technical` o `balanced` | `balanced` |
-| `DB_PATH` | Ruta del SQLite de conversaciones, estado y memoria | `./conversations.db` |
+| `TELEGRAM_TOKEN` | Bot token (BotFather) — **required** | — |
+| `OLLAMA_URL` | Ollama server URL | `http://127.0.0.1:11434` |
+| `OLLAMA_KEEP_ALIVE` | How long Ollama keeps the model loaded in RAM after each use (`-1` = never unload) | `30m` |
+| `CHAT_MODEL` | Chat model to use | `llama3.2:3b` |
+| `RESPONSE_STYLE` | Response style: `brief`, `technical`, or `balanced` | `balanced` |
+| `DB_PATH` | Path to the conversations/state/memory SQLite file | `./conversations.db` |
 
-`.env` **no** se sube al repositorio (está en `.gitignore`) — cada persona usa su propio token.
+`.env` is **not** pushed to the repo (it's in `.gitignore`) — each person uses their own token.
 
-## Ejecución
+## Running it
 
 ```bash
 source venv/bin/activate
 python bot.py
 ```
 
-`conversations.db` se crea automáticamente en el primer arranque; tampoco se versiona, ya que son datos generados en tiempo de ejecución (historial de conversaciones, estado y memoria).
+`conversations.db` is created automatically on first run; it isn't versioned either, since it's runtime-generated data (conversation history, state, and memory).
 
-Para dejarlo corriendo tras cerrar la sesión SSH sin usar `systemd`, puedes usar `tmux` o `screen`:
+To keep it running after closing the SSH session without `systemd`, you can use `tmux` or `screen`:
 
 ```bash
 tmux new -s asimov
 source venv/bin/activate
 python bot.py
-# Ctrl+B, D para salir dejándolo corriendo
+# Ctrl+B, D to detach while leaving it running
 ```
 
-## Cómo elige el modelo el instalador
+## How the installer picks a model
 
-`install.py` primero detecta RAM, núcleos de CPU y si hay GPU NVIDIA, y con eso elige un modelo de partida:
+`install.py` first detects RAM, CPU core count, and whether there's an NVIDIA GPU, and uses that to pick a starting model:
 
-| Modelo | RAM mínima orientativa |
+| Model | Rough minimum RAM |
 |---|---|
 | `llama3.1:8b` | 16 GB |
 | `mistral:7b` | 12 GB |
@@ -88,53 +88,55 @@ python bot.py
 | `llama3.2:1b` | 3 GB |
 | `qwen2.5:0.5b` | — |
 
-Si hay GPU NVIDIA, empieza directamente por el modelo más grande; si la máquina tiene menos de 4 núcleos de CPU, empieza un escalón más abajo. A partir de ahí, prueba ese modelo con un prompt real, te dice cuánto ha tardado, y te pregunta si quieres bajar a uno más ligero (S/N) — puedes repetir tantas veces como quieras hasta quedarte con el que prefieras.
+With an NVIDIA GPU it starts directly at the largest model; with fewer than 4 CPU cores it starts one tier lower. From there, it tries that model with a real prompt, tells you how long it took, and asks whether you want to try a lighter one (Y/N) — you can repeat as many times as you like until you keep the one you prefer.
 
-## Estilo de respuesta
+## Response style
 
-El bot responde según uno de tres estilos, definidos en [response_styles.py](response_styles.py):
+The bot replies according to one of three styles, defined in [response_styles.py](response_styles.py):
 
-| Opción | Estilo | Texto usado en el prompt |
+| Option | Style | Text used in the prompt |
 |---|---|---|
 | 1 | `brief` | "Responde de forma natural y breve." |
 | 2 | `technical` | "Responde de forma técnica y extensa, aportando todo el detalle posible." |
 | 3 | `balanced` | "Responde de forma equilibrada, sin ser demasiado breve ni demasiado extensa." |
 
-Se elige la primera vez en `install.py`, y se guarda en `.env` como `RESPONSE_STYLE`. Para cambiarlo después:
+(The instruction text itself stays in Spanish, since that's the language the bot talks to Telegram users in.)
+
+Chosen the first time in `install.py`, and saved to `.env` as `RESPONSE_STYLE`. To change it later:
 
 ```bash
 source venv/bin/activate
 python configure.py
 ```
 
-`configure.py` actualiza `.env` (sin tocar el resto de variables, como el token) y reinicia el bot automáticamente si está corriendo como servicio `systemd`; si no, te indica cómo reiniciarlo a mano.
+`configure.py` updates `.env` (without touching other variables like the token) and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
 
-## Arquitectura del contexto
+## Context architecture
 
-Cada mensaje se construye en capas (`build_prompt()` en `bot.py`), y **una capa vacía se omite por completo** del prompt en vez de mostrarse como "sin datos":
+Each message is built in layers (`build_prompt()` in `bot.py`), and **an empty layer is omitted entirely** from the prompt instead of being shown as "no data":
 
 ```
-[SYS]     Instrucciones fijas: fecha + estilo de respuesta. Siempre presente.
-[MEM]     Hechos persistentes y estables sobre el usuario (edad, trabajo, preferencias...).
-          Cross-conversación. Solo si hay alguno.
-[STATE]   Estado compacto de ESTA conversación (tema, entidades, decisiones, tareas
-          pendientes, referentes de pronombres). Solo si ya se generó alguno.
-[RECENT]  Últimos turnos literales de esta conversación. Solo si hay mensajes previos.
-[USER]    El mensaje actual, siempre al final.
+[SYS]     Fixed instructions: date + response style. Always present.
+[MEM]     Persistent, stable facts about the user (age, job, preferences...).
+          Cross-conversation. Only if there are any.
+[STATE]   Compact state of THIS conversation (topic, entities, decisions,
+          pending tasks, pronoun referents). Only once one has been generated.
+[RECENT]  Last literal turns of this conversation. Only if there are prior messages.
+[USER]    The current message, always last.
 ```
 
-**[MEM] — memoria persistente estructurada.** No usa búsqueda semántica ni embeddings: se guardan solo hechos cortos y explícitos que el usuario dice sobre sí mismo (tabla `user_facts`), nunca afirmaciones del asistente. Esto es importante porque una respuesta del modelo puede ser errónea (alucinación) — si se guardara como "recuerdo" y se reinyectara más tarde, el error se propagaría y se reforzaría con el tiempo. Al extraerse solo de los mensajes del usuario, eso no puede pasar. Como en un uso personal el número de hechos estables se mantiene pequeño, se incluyen siempre todos, sin necesidad de filtrar por relevancia.
+**[MEM] — structured persistent memory.** No semantic search or embeddings: it only stores short, explicit facts the user states about themselves (`user_facts` table), never assistant claims. This matters because a model response can be wrong (a hallucination) — if it were stored as a "memory" and re-injected later, the error would propagate and reinforce itself over time. Since it's only ever extracted from the user's own messages, that can't happen. Since a personal-use fact count stays small, all of them are always included, no relevance filtering needed.
 
-**[STATE] — resumen progresivo de la conversación**, no un histórico completo. Cuando se acumulan `SUMMARY_BATCH_SIZE` (6) mensajes que ya salieron de la ventana `[RECENT]` sin condensar, `maybe_update_state_and_facts()` le pide al modelo, en una sola llamada, que (a) actualice el `[STATE]` con tema/entidades/decisiones/pendientes/referentes — instruyéndole explícitamente a reflejar correcciones del usuario en vez de las afirmaciones originales del asistente si hubo un error — y (b) extraiga hechos nuevos para `[MEM]` a partir únicamente de lo que dijo el usuario. Esto añade una llamada extra a Ollama, pero solo cada 6 mensajes (no en cada uno) y **después** de responderte, sin añadir espera a la respuesta que recibes.
+**[STATE] — progressive conversation summary**, not a full transcript. When `SUMMARY_BATCH_SIZE` (6) messages that already fell out of the `[RECENT]` window pile up unfolded, `maybe_update_state_and_facts()` asks the model, in a single call, to (a) update `[STATE]` with topic/entities/decisions/pending items/referents — explicitly instructed to record the user's corrections instead of the assistant's original (possibly wrong) claims — and (b) extract new facts for `[MEM]` from what the user said only. This adds one extra Ollama call, but only every 6 messages (not every one), and it runs **after** replying to you, so it doesn't add latency to the response you receive.
 
-**[RECENT] — ventana dinámica**, no fija: por defecto `DEFAULT_WINDOW` (4 mensajes / 2 turnos), ya que `[STATE]` aporta la continuidad condensada y un modelo de 3B rinde peor cuanto más texto literal se le mezcla. Se amplía a `EXPANDED_WINDOW` (8) solo cuando el mensaje actual parece depender de contexto inmediato — mensajes cortos o con pronombres/referencias ("eso", "el anterior", etc.), vía `looks_referential()`, una heurística barata sin llamada extra al modelo.
+**[RECENT] — dynamic window**, not fixed: `DEFAULT_WINDOW` (4 messages / 2 turns) by default, since `[STATE]` already carries the condensed continuity and a 3B model performs worse the more literal text gets mixed in. It expands to `EXPANDED_WINDOW` (8) only when the current message looks like it depends on immediate context — short messages or ones with pronouns/references ("that", "the previous one", etc.) via `looks_referential()`, a cheap heuristic with no extra model call.
 
-Constantes ajustables al principio de `bot.py`: `DEFAULT_WINDOW`, `EXPANDED_WINDOW`, `HISTORY_SNIPPET_CHARS`, `STATE_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_SIZE`.
+Tunable constants at the top of `bot.py`: `DEFAULT_WINDOW`, `EXPANDED_WINDOW`, `HISTORY_SNIPPET_CHARS`, `STATE_MAX_CHARS`, `FACT_MAX_CHARS`, `SUMMARY_BATCH_SIZE`.
 
 ## Logs
 
-El bot escribe logs (en inglés) a `logs/asimov.log`, con rotación automática (5 MB por fichero, 3 copias de respaldo) y también por consola. Se registran arranque del bot, acciones de usuario (start, nueva conversación, mensajes) y errores (fallos al llamar a Ollama, excepciones no controladas). Los ficheros de log no se versionan (`logs/*.log*` está en `.gitignore`); solo se mantiene la carpeta vacía en el repo.
+The bot writes logs to `logs/asimov.log`, with automatic rotation (5 MB per file, 3 backups) and also to the console. It logs bot startup, user actions (start, new conversation, messages), and errors (failed Ollama calls, unhandled exceptions). Log files aren't versioned (`logs/*.log*` is in `.gitignore`); only the empty folder is kept in the repo.
 
-Cada respuesta del chat también registra el desglose de tiempos que devuelve Ollama (`total`, `load`, `prompt_eval`, `generation`), útil para diagnosticar respuestas lentas: si `load` es alto, es que Ollama tuvo que recargar el modelo en memoria (ver `OLLAMA_KEEP_ALIVE` arriba); si `generation` es el que domina, es que la respuesta generada es simplemente muy larga.
+Each chat reply also logs Ollama's own timing breakdown (`total`, `load`, `prompt_eval`, `generation`), useful for diagnosing slow replies: if `load` is high, Ollama had to reload the model into memory (see `OLLAMA_KEEP_ALIVE` above); if `generation` dominates, the generated reply is simply very long.
 
-Con `LOG_LEVEL=DEBUG` en `.env` (por defecto `INFO`), además se registra el **prompt completo** enviado a Ollama en cada mensaje — útil para ver exactamente qué contexto (recuerdos + historial) se está inyectando de verdad.
+With `LOG_LEVEL=DEBUG` in `.env` (default `INFO`), it also logs the **full prompt** sent to Ollama on every message — useful for seeing exactly what context (memory + history) is actually being injected.

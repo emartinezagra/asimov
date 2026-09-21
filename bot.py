@@ -21,10 +21,10 @@ load_dotenv()
 logger = setup_logging()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.2:3b")          # cambia esto por el modelo que mejor te fue
-# Cuánto tiempo mantiene Ollama el modelo cargado en memoria tras cada petición.
-# Por defecto Ollama lo descarga a los 5 minutos de inactividad, lo que fuerza
-# una recarga lenta (sobre todo sin GPU) en la siguiente petición.
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.2:3b")          # change this to whichever model worked best for you
+# How long Ollama keeps the model loaded in memory after each request.
+# By default Ollama unloads it after 5 minutes of inactivity, which forces
+# a slow reload (especially without a GPU) on the next request.
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 RESPONSE_STYLE_TEXT = RESPONSE_STYLES.get(
     os.getenv("RESPONSE_STYLE", DEFAULT_RESPONSE_STYLE),
@@ -32,23 +32,23 @@ RESPONSE_STYLE_TEXT = RESPONSE_STYLES.get(
 )
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TELEGRAM_TOKEN:
-    raise RuntimeError("Falta TELEGRAM_TOKEN. Definilo en un archivo .env (ver .env.example).")
+    raise RuntimeError("Missing TELEGRAM_TOKEN. Set it in a .env file (see .env.example).")
 
-# Ventana de turnos literales ([RECENT]): pequeña por defecto porque [STATE] ya
-# aporta continuidad condensada; se amplía solo cuando el mensaje parece depender
-# de contexto reciente (pronombres, mensajes muy cortos/elípticos).
+# [RECENT] literal-turn window: small by default because [STATE] already
+# carries condensed continuity; it only expands when the message looks
+# like it depends on recent context (pronouns, very short/elliptical messages).
 DEFAULT_WINDOW = 4
 EXPANDED_WINDOW = 8
 HISTORY_SNIPPET_CHARS = 300
 STATE_MAX_CHARS = 400
 FACT_MAX_CHARS = 150
 
-# Cada SUMMARY_BATCH_SIZE mensajes que salen de la ventana [RECENT] sin condensar
-# todavía disparan una actualización de [STATE] + extracción de hechos nuevos para [MEM].
+# Every SUMMARY_BATCH_SIZE messages that fall out of the [RECENT] window without
+# being folded yet trigger a [STATE] update + extraction of new facts for [MEM].
 SUMMARY_BATCH_SIZE = 6
 
-active_conversation = {}   # user_id -> conversation_id (en RAM, se pierde al reiniciar el bot)
-pending_reminders = {}     # simple, en RAM
+active_conversation = {}   # user_id -> conversation_id (in RAM, lost on bot restart)
+pending_reminders = {}     # simple, in RAM
 
 def truncate(text, max_chars):
     text = text.strip()
@@ -59,7 +59,7 @@ def looks_referential(text):
     lowered = text.lower()
     return len(text) < 40 or any(m in lowered for m in markers)
 
-# ---------- Construcción del prompt por capas: [SYS][MEM][STATE][RECENT][USER] ----------
+# ---------- Layered prompt construction: [SYS][MEM][STATE][RECENT][USER] ----------
 
 def build_prompt(user_id, conv_id, user_text):
     fecha_actual = datetime.now().strftime("%A %d de %B de %Y, %H:%M")
@@ -82,7 +82,7 @@ def build_prompt(user_id, conv_id, user_text):
     parts.append(f"[USER]\n{user_text}")
     return "\n\n".join(parts)
 
-# ---------- /start: elegir nueva o continuar ----------
+# ---------- /start: choose new or continue ----------
 
 def build_start_menu(user_id):
     conversations = list_conversations(user_id, limit=5)
@@ -128,14 +128,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} loaded conversation {conv_id}")
         await query.edit_message_text("Conversación anterior cargada. Sigamos donde lo dejamos.")
 
-# ---------- Recordatorios ----------
+# ---------- Reminders ----------
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     logger.info(f"Sending reminder to chat {job.chat_id}")
     await context.bot.send_message(chat_id=job.chat_id, text=job.data)
 
-# ---------- Actualización de [STATE] y extracción de hechos para [MEM] ----------
+# ---------- [STATE] update and [MEM] fact extraction ----------
 
 def parse_extraction(text):
     state = None
@@ -214,13 +214,13 @@ FACTS:
     except Exception:
         logger.error(f"Failed to update state/facts for conversation {conv_id}", exc_info=True)
 
-# ---------- Mensajes normales ----------
+# ---------- Regular messages ----------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
 
-    # Si no hay conversación activa, obliga a elegir primero
+    # No active conversation: force the user to pick one first
     if user_id not in active_conversation:
         await start(update, context)
         return
@@ -228,7 +228,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conv_id = active_conversation[user_id]
     logger.info(f"User {user_id} sent a message in conversation {conv_id} ({len(user_text)} chars)")
 
-    # Detección simple de recordatorio (2 minutos fijos, mejorable)
+    # Simple reminder detection (fixed 2 minutes, could be improved)
     if "recuérdame" in user_text.lower() or "recordatorio" in user_text.lower():
         context.job_queue.run_once(
             send_reminder, when=120,
@@ -274,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await maybe_update_state_and_facts(conv_id, user_id)
 
-# ---------- Arranque ----------
+# ---------- Startup ----------
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Unhandled exception while processing an update", exc_info=context.error)
