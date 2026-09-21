@@ -1,6 +1,9 @@
 import os
 import chromadb
 import requests
+from logging_config import setup_logging
+
+logger = setup_logging()
 
 OLLAMA_URL = "http://127.0.0.1:11434"
 EMBED_MODEL = "nomic-embed-text"
@@ -14,8 +17,13 @@ client = chromadb.PersistentClient(path=MEMORY_DB_PATH)
 collection = client.get_or_create_collection("memory")
 
 def embed(text):
-    resp = requests.post(f"{OLLAMA_URL}/api/embeddings", json={"model": EMBED_MODEL, "prompt": text})
-    return resp.json()["embedding"]
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/embeddings", json={"model": EMBED_MODEL, "prompt": text})
+        resp.raise_for_status()
+        return resp.json()["embedding"]
+    except Exception:
+        logger.error("Failed to get embedding from Ollama", exc_info=True)
+        raise
 
 def add_memory(user_id, text):
     emb = embed(text)

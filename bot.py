@@ -12,8 +12,10 @@ from db import (
     create_conversation, list_conversations, set_title_if_missing,
     add_message, get_recent_messages
 )
+from logging_config import setup_logging
 
 load_dotenv()
+logger = setup_logging()
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.2:3b")          # cambia esto por el modelo que mejor te fue
@@ -28,6 +30,7 @@ pending_reminders = {}     # simple, en RAM
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    logger.info(f"User {user_id} opened /start")
     conversations = list_conversations(user_id, limit=5)
 
     buttons = [[InlineKeyboardButton("🆕 Nueva conversación", callback_data="new")]]
@@ -48,16 +51,19 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "new":
         conv_id = create_conversation(user_id)
         active_conversation[user_id] = conv_id
+        logger.info(f"User {user_id} started new conversation {conv_id}")
         await query.edit_message_text("Conversación nueva iniciada. Escríbeme cuando quieras.")
     elif query.data.startswith("load:"):
         conv_id = query.data.split(":", 1)[1]
         active_conversation[user_id] = conv_id
+        logger.info(f"User {user_id} loaded conversation {conv_id}")
         await query.edit_message_text("Conversación anterior cargada. Sigamos donde lo dejamos.")
 
 # ---------- Recordatorios ----------
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
+    logger.info(f"Sending reminder to chat {job.chat_id}")
     await context.bot.send_message(chat_id=job.chat_id, text=job.data)
 
 # ---------- Mensajes normales ----------
@@ -72,6 +78,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     conv_id = active_conversation[user_id]
+    logger.info(f"User {user_id} sent a message in conversation {conv_id} ({len(user_text)} chars)")
 
     # Detección simple de recordatorio (2 minutos fijos, mejorable)
     if "recuérdame" in user_text.lower() or "recordatorio" in user_text.lower():
@@ -80,6 +87,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=update.effective_chat.id,
             data="⏰ Recordatorio: " + user_text
         )
+        logger.info(f"Reminder scheduled for chat {update.effective_chat.id} in 120s")
         await update.message.reply_text("Vale, te lo recuerdo en 2 minutos.")
         return
 
@@ -105,10 +113,16 @@ Mensaje actual del usuario: {user_text}
 
 Responde de forma natural y breve, usando el contexto reciente antes que los recuerdos antiguos si hay conflicto."""
 
-    resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
-        "model": CHAT_MODEL, "prompt": prompt, "stream": False
-    })
-    answer = resp.json()["response"]
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+            "model": CHAT_MODEL, "prompt": prompt, "stream": False
+        })
+        resp.raise_for_status()
+        answer = resp.json()["response"]
+    except Exception:
+        logger.error(f"Ollama request failed for conversation {conv_id}", exc_info=True)
+        await update.message.reply_text("Ha ocurrido un error generando la respuesta. Inténtalo de nuevo.")
+        return
 
     set_title_if_missing(conv_id, user_text)
     add_message(conv_id, "Usuario", user_text)
@@ -116,12 +130,19 @@ Responde de forma natural y breve, usando el contexto reciente antes que los rec
     add_memory(user_id, f"Usuario dijo: {user_text}")
     add_memory(user_id, f"Tú respondiste: {answer}")
 
+    logger.info(f"Replied to user {user_id} in conversation {conv_id}")
     await update.message.reply_text(answer)
 
 # ---------- Arranque ----------
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled exception while processing an update", exc_info=context.error)
 
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(handle_button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_error_handler(error_handler)
+
+logger.info(f"Starting Asimov bot with model {CHAT_MODEL}")
 app.run_polling()

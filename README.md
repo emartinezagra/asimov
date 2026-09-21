@@ -89,3 +89,7 @@ python bot.py
 | `qwen2.5:0.5b` | — |
 
 Si hay GPU NVIDIA, empieza directamente por el modelo más grande; si la máquina tiene menos de 4 núcleos de CPU, empieza un escalón más abajo. A partir de ahí, prueba ese modelo con un prompt real, te dice cuánto ha tardado, y te pregunta si quieres bajar a uno más ligero (S/N) — puedes repetir tantas veces como quieras hasta quedarte con el que prefieras.
+
+## Logs
+
+El bot escribe logs (en inglés) a `logs/asimov.log`, con rotación automática (5 MB por fichero, 3 copias de respaldo) y también por consola. Se registran arranque del bot, acciones de usuario (start, nueva conversación, mensajes) y errores (fallos al llamar a Ollama, excepciones no controladas). Los ficheros de log no se versionan (`logs/*.log*` está en `.gitignore`); solo se mantiene la carpeta vacía en el repo.
