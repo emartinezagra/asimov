@@ -6,8 +6,11 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 LOG_FILE = os.path.join(LOG_DIR, "asimov.log")
 
 
-def setup_logging(level=logging.INFO):
+def setup_logging(level=None):
     root = logging.getLogger()
+
+    if level is None:
+        level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 
     if not root.handlers:
         os.makedirs(LOG_DIR, exist_ok=True)

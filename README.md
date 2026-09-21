@@ -119,8 +119,12 @@ Cada mensaje se envía a Ollama junto con recuerdos relevantes (RAG) y los últi
 - `HISTORY_MESSAGES` (6) / `HISTORY_SNIPPET_CHARS` (300) — lo mismo para los mensajes recientes de la conversación.
 - `MEMORY_STORE_CHARS` (500) — también se recorta lo que se guarda como recuerdo nuevo, para que no siga creciendo indefinidamente.
 
+Además, `MEMORY_MAX_DISTANCE` (en `.env`, sin definir por defecto) descarta recuerdos poco relevantes para la pregunta actual en vez de inyectar siempre los `MEMORY_RESULTS` más cercanos aunque no vengan al caso. ChromaDB devuelve una distancia por cada recuerdo candidato (más bajo = más relevante); `search_memory()` la usa para filtrar. El log (`Memory candidate distances for user ...`) muestra esos valores reales en cada mensaje, para que calibres el umbral con datos de tu propio uso en vez de un número arbitrario.
+
 ## Logs
 
 El bot escribe logs (en inglés) a `logs/asimov.log`, con rotación automática (5 MB por fichero, 3 copias de respaldo) y también por consola. Se registran arranque del bot, acciones de usuario (start, nueva conversación, mensajes) y errores (fallos al llamar a Ollama, excepciones no controladas). Los ficheros de log no se versionan (`logs/*.log*` está en `.gitignore`); solo se mantiene la carpeta vacía en el repo.
 
 Cada respuesta del chat también registra el desglose de tiempos que devuelve Ollama (`total`, `load`, `prompt_eval`, `generation`), útil para diagnosticar respuestas lentas: si `load` es alto, es que Ollama tuvo que recargar el modelo en memoria (ver `OLLAMA_KEEP_ALIVE` arriba); si `generation` es el que domina, es que la respuesta generada es simplemente muy larga.
+
+Con `LOG_LEVEL=DEBUG` en `.env` (por defecto `INFO`), además se registra el **prompt completo** enviado a Ollama en cada mensaje — útil para ver exactamente qué contexto (recuerdos + historial) se está inyectando de verdad.

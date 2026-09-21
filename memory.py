@@ -33,7 +33,18 @@ def add_memory(user_id, text):
     doc_id = f"{user_id}-{hash(text)}"
     collection.add(documents=[text], embeddings=[emb], ids=[doc_id], metadatas=[{"user_id": str(user_id)}])
 
-def search_memory(user_id, query, k=5):
+def search_memory(user_id, query, k=5, max_distance=None):
     emb = embed(query)
-    results = collection.query(query_embeddings=[emb], n_results=k, where={"user_id": str(user_id)})
-    return results["documents"][0] if results["documents"] else []
+    results = collection.query(
+        query_embeddings=[emb], n_results=k, where={"user_id": str(user_id)},
+        include=["documents", "distances"]
+    )
+    docs = results["documents"][0] if results["documents"] else []
+    distances = results["distances"][0] if results.get("distances") else []
+
+    if distances:
+        logger.info(f"Memory candidate distances for user {user_id}: {[round(d, 3) for d in distances]}")
+
+    if max_distance is None:
+        return docs
+    return [doc for doc, dist in zip(docs, distances) if dist <= max_distance]

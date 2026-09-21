@@ -40,6 +40,13 @@ HISTORY_MESSAGES = 6
 HISTORY_SNIPPET_CHARS = 300
 MEMORY_STORE_CHARS = 500  # también se recorta lo que se guarda, para que no siga creciendo
 
+# Si se define, descarta recuerdos cuya distancia (ChromaDB) sea mayor que este valor
+# — es decir, poco relevantes para la pregunta actual. Sin definir, se usan siempre
+# los MEMORY_RESULTS más cercanos. Mira "Memory candidate distances" en el log para
+# calibrar un valor razonable en tu caso.
+_max_distance_env = os.getenv("MEMORY_MAX_DISTANCE")
+MEMORY_MAX_DISTANCE = float(_max_distance_env) if _max_distance_env else None
+
 active_conversation = {}   # user_id -> conversation_id (en RAM, se pierde al reiniciar el bot)
 pending_reminders = {}     # simple, en RAM
 
@@ -125,8 +132,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Vale, te lo recuerdo en 2 minutos.")
         return
 
-    # Memoria semántica (RAG) — busca en TODO el historial del usuario, no solo esta conversación
-    relevant = search_memory(user_id, user_text, k=MEMORY_RESULTS)
+    # Memoria semántica (RAG) — busca en TODO el historial del usuario, no solo esta conversación,
+    # y descarta los recuerdos cuya distancia supere MEMORY_MAX_DISTANCE (si está configurado)
+    relevant = search_memory(user_id, user_text, k=MEMORY_RESULTS, max_distance=MEMORY_MAX_DISTANCE)
     memory_block = "\n".join(truncate(m, MEMORY_SNIPPET_CHARS) for m in relevant) \
         if relevant else "Sin recuerdos relevantes."
 
@@ -148,6 +156,8 @@ Conversación reciente (esto es lo más importante para el contexto inmediato):
 Mensaje actual del usuario: {user_text}
 
 {RESPONSE_STYLE_TEXT} Usa el contexto reciente antes que los recuerdos antiguos si hay conflicto."""
+
+    logger.debug(f"Prompt sent to Ollama ({len(prompt)} chars) for conversation {conv_id}:\n{prompt}")
 
     try:
         resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
