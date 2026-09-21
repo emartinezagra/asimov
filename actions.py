@@ -44,10 +44,26 @@ def parse_action_json(raw_text):
         logger.error(f"Invalid JSON from model, falling back to CHAT: {raw_text!r}")
         return {"action": "CHAT", "message": FALLBACK_MESSAGE}
 
+    data = _normalize_action_shape(data)
+
     if not isinstance(data, dict) or data.get("action") not in ALLOWED_ACTIONS:
         logger.error(f"Unknown/missing action from model, falling back to CHAT: {data!r}")
         return {"action": "CHAT", "message": FALLBACK_MESSAGE}
 
+    return data
+
+
+def _normalize_action_shape(data):
+    """Recovers from a common small-model mistake: wrapping the action name
+    as a key instead of putting it under "action", e.g.
+    {"CHAT": {"message": "..."}} instead of {"action": "CHAT", "message": "..."}.
+    Only touches that exact single-key shape — anything else is left alone
+    for the normal validation path to reject."""
+    if not isinstance(data, dict) or "action" in data or len(data) != 1:
+        return data
+    key, value = next(iter(data.items()))
+    if key in ALLOWED_ACTIONS and isinstance(value, dict):
+        return {"action": key, **value}
     return data
 
 
