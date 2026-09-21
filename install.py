@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Instalador de Asimov: prepara un bot de Telegram local sobre Ollama,
-eligiendo el modelo más grande que responda dentro del presupuesto de
-tiempo en esta máquina concreta.
+partiendo de un modelo acorde al hardware y dejando que el usuario decida,
+midiendo el tiempo real, si quiere bajar a uno más ligero.
 """
 import json
 import os
@@ -13,13 +13,11 @@ import sys
 import time
 import urllib.request
 
-RESPONSE_BUDGET_SECONDS = 10
 OLLAMA_URL = "http://127.0.0.1:11434"
 BENCHMARK_PROMPT = "Responde solo con la palabra 'ok'."
 
-# De mayor/mejor a menor/más rápido. El instalador arranca en el tier que
-# sugiere el hardware detectado y baja de nivel hasta que un modelo
-# responde dentro de RESPONSE_BUDGET_SECONDS.
+# De mayor/mejor a menor/más rápido. El instalador elige un punto de
+# partida según RAM/CPU/GPU y va bajando de nivel si el usuario lo pide.
 MODEL_TIERS = [
     {"name": "llama3.1:8b",  "min_ram_gb": 16},
     {"name": "mistral:7b",   "min_ram_gb": 12},
@@ -43,8 +41,26 @@ def detect_ram_gb():
         return 4.0  # estimación conservadora si no se puede detectar
 
 
+def detect_cpu_cores():
+    try:
+        import psutil
+        return psutil.cpu_count(logical=True) or 1
+    except ImportError:
+        return os.cpu_count() or 1
+
+
 def has_nvidia_gpu():
     return shutil.which("nvidia-smi") is not None
+
+
+def initial_tier_index(ram_gb, cpu_cores, gpu):
+    idx = next((i for i, t in enumerate(MODEL_TIERS) if ram_gb >= t["min_ram_gb"]),
+               len(MODEL_TIERS) - 1)
+    if gpu:
+        idx = 0  # con GPU dedicada, el modelo más grande suele ir sobrado
+    elif cpu_cores < 4:
+        idx = min(idx + 1, len(MODEL_TIERS) - 1)  # pocos núcleos: empezar más ligero
+    return idx
 
 
 def ensure_ollama_installed():
@@ -85,21 +101,30 @@ def benchmark(model):
     return time.time() - start
 
 
-def choose_chat_model(ram_gb):
-    candidates = [t for t in MODEL_TIERS if ram_gb >= t["min_ram_gb"]] or [MODEL_TIERS[-1]]
-    print(f"Midiendo tiempo de respuesta (objetivo: < {RESPONSE_BUDGET_SECONDS}s)...")
-    for tier in candidates:
-        model = tier["name"]
+def choose_chat_model(ram_gb, cpu_cores, gpu):
+    idx = initial_tier_index(ram_gb, cpu_cores, gpu)
+    while True:
+        model = MODEL_TIERS[idx]["name"]
         ollama_pull(model)
         elapsed = benchmark(model)
         if elapsed is None:
+            if idx == len(MODEL_TIERS) - 1:
+                print("No se pudo probar ningún modelo. Revisa que Ollama esté corriendo.")
+                sys.exit(1)
+            idx += 1
             continue
-        print(f"  {model}: {elapsed:.1f}s")
-        if elapsed <= RESPONSE_BUDGET_SECONDS:
+
+        print(f"Con el modelo actual ({model}) el sistema tarda {elapsed:.1f} segundos en contestar.")
+
+        if idx == len(MODEL_TIERS) - 1:
+            print("Ya es el modelo más ligero disponible.")
             return model
-    smallest = MODEL_TIERS[-1]["name"]
-    print(f"  Ningún modelo bajó de {RESPONSE_BUDGET_SECONDS}s en esta máquina; usando el más ligero ({smallest}).")
-    return smallest
+
+        answer = input("¿Probamos con uno más ligero? [S/N]: ").strip().lower()
+        if answer == "s":
+            idx += 1
+            continue
+        return model
 
 
 def write_env(telegram_token, chat_model):
@@ -158,11 +183,12 @@ def main():
     ensure_ollama_installed()
 
     ram_gb = detect_ram_gb()
+    cpu_cores = detect_cpu_cores()
     gpu = has_nvidia_gpu()
-    print(f"RAM detectada: {ram_gb:.1f} GB | GPU NVIDIA: {'sí' if gpu else 'no'}\n")
+    print(f"RAM detectada: {ram_gb:.1f} GB | CPU: {cpu_cores} núcleos | GPU NVIDIA: {'sí' if gpu else 'no'}\n")
 
     ollama_pull(EMBED_MODEL)
-    chat_model = choose_chat_model(ram_gb)
+    chat_model = choose_chat_model(ram_gb, cpu_cores, gpu)
     print(f"\nModelo de chat elegido: {chat_model}\n")
 
     token = input("Introduce tu token de Telegram (de @BotFather): ").strip()

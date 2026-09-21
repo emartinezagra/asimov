@@ -4,7 +4,7 @@ Bot de Telegram con memoria conversacional (SQLite) y memoria semántica (RAG co
 
 ## Instalación rápida (recomendada)
 
-Requiere solo Python 3 y `curl`. El instalador se encarga del resto: instala Ollama si falta, detecta la RAM y GPU de la máquina, **prueba varios modelos en real** y elige automáticamente el más grande que responda en menos de 10 segundos en tu hardware.
+Requiere solo Python 3 y `curl`. El instalador se encarga del resto: instala Ollama si falta, detecta RAM/CPU/GPU de la máquina para elegir un modelo de partida, y te muestra el tiempo de respuesta real de cada uno preguntándote si quieres probar uno más ligero.
 
 ```bash
 git clone https://github.com/emartinezagra/asimov.git
@@ -78,7 +78,7 @@ python bot.py
 
 ## Cómo elige el modelo el instalador
 
-`install.py` prueba, de mayor a menor, estos modelos hasta encontrar uno que responda en menos de 10 segundos en la máquina donde se instala:
+`install.py` primero detecta RAM, núcleos de CPU y si hay GPU NVIDIA, y con eso elige un modelo de partida:
 
 | Modelo | RAM mínima orientativa |
 |---|---|
@@ -88,4 +88,4 @@ python bot.py
 | `llama3.2:1b` | 3 GB |
 | `qwen2.5:0.5b` | — |
 
-La RAM solo decide por dónde empezar a probar; la decisión final siempre se basa en el tiempo de respuesta real medido con un prompt de prueba contra Ollama, no solo en las specs detectadas.
+Si hay GPU NVIDIA, empieza directamente por el modelo más grande; si la máquina tiene menos de 4 núcleos de CPU, empieza un escalón más abajo. A partir de ahí, prueba ese modelo con un prompt real, te dice cuánto ha tardado, y te pregunta si quieres bajar a uno más ligero (S/N) — puedes repetir tantas veces como quieras hasta quedarte con el que prefieras.
