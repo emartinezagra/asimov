@@ -11,25 +11,81 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
 
 import install_common as common
 
 DEFAULT_TIMEZONE = "Europe/Madrid"
+OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+# Ollama's Windows installer is Inno Setup-based and supports these silent-
+# install flags for a normal per-user install (no admin rights needed — this
+# is the same install mode as clicking through the GUI yourself). There's a
+# known issue with /ALLUSERS (machine-wide, enterprise deployment) leaving
+# registry entries user-scoped, but we don't use that flag, so it doesn't
+# apply here.
+SILENT_INSTALL_ARGS = ["/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"]
+
+
+def _default_ollama_dir():
+    """Where a per-user install lands — checked because a silent install
+    doesn't update the PATH of this already-running process."""
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    return os.path.join(local_appdata, "Programs", "Ollama") if local_appdata else None
+
+
+def _install_silently():
+    installer_path = None
+    try:
+        installer_path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
+        print("Downloading the Ollama installer...")
+        urllib.request.urlretrieve(OLLAMA_INSTALLER_URL, installer_path)
+        print("Installing Ollama (silent)...")
+        subprocess.run([installer_path, *SILENT_INSTALL_ARGS], check=True, timeout=300)
+        return True
+    except Exception as e:
+        print(f"Automatic installation failed: {e}")
+        return False
+    finally:
+        if installer_path and os.path.exists(installer_path):
+            try:
+                os.remove(installer_path)
+            except OSError:
+                pass
 
 
 def ensure_ollama_installed():
     if shutil.which("ollama"):
         print("Ollama is already installed.")
         return
+
     print("Ollama isn't installed.")
-    print("Download and run the installer from: https://ollama.com/download/windows")
-    input("Press Enter once you've finished installing Ollama to continue...")
-    if not shutil.which("ollama"):
-        print("Still can't find 'ollama' on PATH.")
-        print("You may need to open a new terminal — PATH changes made by the")
-        print("installer only apply to terminals opened after it finished.")
-        sys.exit(1)
-    print("Ollama detected.")
+    answer = input(
+        "Download and install it silently now (official installer from ollama.com)? [Y/n]: "
+    ).strip().lower()
+
+    if answer in ("", "y"):
+        if not _install_silently():
+            print("Download and run it yourself from: https://ollama.com/download/windows")
+            input("Press Enter once you've finished installing Ollama to continue...")
+    else:
+        print("Download and run the installer from: https://ollama.com/download/windows")
+        input("Press Enter once you've finished installing Ollama to continue...")
+
+    if shutil.which("ollama"):
+        print("Ollama detected.")
+        return
+
+    ollama_dir = _default_ollama_dir()
+    if ollama_dir and os.path.exists(os.path.join(ollama_dir, "ollama.exe")):
+        os.environ["PATH"] = ollama_dir + os.pathsep + os.environ.get("PATH", "")
+        print("Ollama detected (added to PATH for this session).")
+        return
+
+    print("Still can't find 'ollama' on PATH.")
+    print("You may need to open a new terminal — PATH changes made by the")
+    print("installer only apply to terminals opened after it finished.")
+    sys.exit(1)
 
 
 def detect_timezone():
