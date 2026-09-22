@@ -54,9 +54,27 @@ def _install_silently():
                 pass
 
 
+def _try_recover_from_default_dir():
+    """True if ollama.exe exists at the standard per-user install location,
+    in which case it's added to this process's PATH and reported as found."""
+    ollama_dir = _default_ollama_dir()
+    if ollama_dir and os.path.exists(os.path.join(ollama_dir, "ollama.exe")):
+        os.environ["PATH"] = ollama_dir + os.pathsep + os.environ.get("PATH", "")
+        return True
+    return False
+
+
 def ensure_ollama_installed():
     if shutil.which("ollama"):
         print("Ollama is already installed.")
+        return
+
+    # Not on PATH doesn't necessarily mean not installed: a silent install
+    # (ours or a previous manual one) doesn't update the PATH of a terminal
+    # that was already open. Check the standard install location BEFORE
+    # claiming it's missing and offering to install it again.
+    if _try_recover_from_default_dir():
+        print("Ollama is already installed (added to PATH for this session).")
         return
 
     print("Ollama isn't installed.")
@@ -76,9 +94,7 @@ def ensure_ollama_installed():
         print("Ollama detected.")
         return
 
-    ollama_dir = _default_ollama_dir()
-    if ollama_dir and os.path.exists(os.path.join(ollama_dir, "ollama.exe")):
-        os.environ["PATH"] = ollama_dir + os.pathsep + os.environ.get("PATH", "")
+    if _try_recover_from_default_dir():
         print("Ollama detected (added to PATH for this session).")
         return
 
