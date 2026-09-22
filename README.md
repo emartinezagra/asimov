@@ -115,7 +115,7 @@ python bot.py
 | `llama3.2:1b` | 3 GB |
 | `qwen2.5:0.5b` | — |
 
-With an NVIDIA GPU it starts directly at the largest model; with fewer than 4 CPU cores it starts one tier lower. From there, it tries that model with a real prompt, tells you how long it took, and asks whether you want to try a lighter one (Y/N) — you can repeat as many times as you like until you keep the one you prefer.
+With a GPU (NVIDIA via `nvidia-smi`, or AMD — including an integrated one, since Ollama's Vulkan backend can use those too by default on Windows) it starts directly at the largest model; with fewer than 4 CPU cores and no GPU, it starts one tier lower. From there, it tries that model with a real prompt and tells you how long it took. If it's not already at an extreme, it then asks whether you want to try a **lighter** model, a **heavier** one, or keep this one — so an initial guess that undershoots (e.g. a laptop iGPU that turns out to handle more than expected) isn't a dead end, and you can go back and forth as many times as you like before settling on one.
 
 ## Response style
 

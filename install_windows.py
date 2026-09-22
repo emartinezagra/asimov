@@ -133,7 +133,7 @@ def main():
 
     ram_gb = common.detect_ram_gb()
     cpu_cores = common.detect_cpu_cores()
-    gpu = common.has_nvidia_gpu()
+    gpu = common.has_gpu()
     common.print_hardware(ram_gb, cpu_cores, gpu)
 
     chat_model = common.choose_chat_model(ram_gb, cpu_cores, gpu)

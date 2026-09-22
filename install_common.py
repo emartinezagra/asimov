@@ -55,6 +55,47 @@ def has_nvidia_gpu():
     return shutil.which("nvidia-smi") is not None
 
 
+def has_amd_gpu():
+    """Matches integrated AMD graphics too, not just discrete cards. That's
+    deliberate: Ollama's Vulkan backend (on by default, no setup needed on
+    Windows) can accelerate on an AMD iGPU even though AMD's own ROCm
+    backend explicitly doesn't support Windows APUs — detecting "any AMD
+    GPU" is a reasonable starting signal either way, and the real benchmark
+    that follows is what actually decides, not this guess."""
+    system = platform.system()
+    if system == "Windows":
+        result = _run_quiet([
+            "powershell", "-NoProfile", "-Command",
+            "(Get-CimInstance Win32_VideoController).Name"
+        ])
+        if result is None:
+            return False
+        output = (result.stdout or "").lower()
+        return "amd" in output or "radeon" in output
+    if system == "Linux":
+        result = _run_quiet(["lspci"])
+        if result is None:
+            return False
+        for line in (result.stdout or "").splitlines():
+            lower = line.lower()
+            is_gpu_line = "vga" in lower or "3d controller" in lower or "display controller" in lower
+            if is_gpu_line and ("amd" in lower or "radeon" in lower or "ati" in lower):
+                return True
+        return False
+    return False
+
+
+def _run_quiet(cmd, timeout=10):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def has_gpu():
+    return has_nvidia_gpu() or has_amd_gpu()
+
+
 def initial_tier_index(ram_gb, cpu_cores, gpu):
     idx = next((i for i, t in enumerate(MODEL_TIERS) if ram_gb >= t["min_ram_gb"]),
                len(MODEL_TIERS) - 1)
@@ -101,13 +142,24 @@ def choose_chat_model(ram_gb, cpu_cores, gpu):
 
         print(f"With the current model ({model}) the system takes {elapsed:.1f} seconds to reply.")
 
-        if idx == len(MODEL_TIERS) - 1:
-            print("This is already the lightest model available.")
+        can_go_lighter = idx < len(MODEL_TIERS) - 1
+        can_go_heavier = idx > 0
+        if not can_go_lighter and not can_go_heavier:
             return model
 
-        answer = input("Try a lighter one? [y/N]: ").strip().lower()
-        if answer == "y":
+        if can_go_lighter and can_go_heavier:
+            prompt = "Try a [l]ighter model, a [h]eavier one, or keep this one? [l/h/Enter to keep]: "
+        elif can_go_lighter:
+            prompt = "This is the heaviest model available. Try a [l]ighter one? [l/Enter to keep]: "
+        else:
+            prompt = "This is the lightest model available. Try a [h]eavier one? [h/Enter to keep]: "
+
+        answer = input(prompt).strip().lower()
+        if answer == "l" and can_go_lighter:
             idx += 1
+            continue
+        if answer == "h" and can_go_heavier:
+            idx -= 1
             continue
         return model
 
@@ -165,5 +217,13 @@ def ask_telegram_token():
     return token
 
 
+def gpu_label():
+    if has_nvidia_gpu():
+        return "yes (NVIDIA)"
+    if has_amd_gpu():
+        return "yes (AMD)"
+    return "no"
+
+
 def print_hardware(ram_gb, cpu_cores, gpu):
-    print(f"Detected RAM: {ram_gb:.1f} GB | CPU: {cpu_cores} cores | NVIDIA GPU: {'yes' if gpu else 'no'}\n")
+    print(f"Detected RAM: {ram_gb:.1f} GB | CPU: {cpu_cores} cores | GPU: {gpu_label() if gpu else 'no'}\n")
