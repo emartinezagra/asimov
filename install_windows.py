@@ -142,9 +142,14 @@ def main():
     response_style = common.choose_response_style()
     token = common.ask_telegram_token()
 
-    common.write_env(token, chat_model, response_style, detect_timezone())
-    print(f"(Timezone set to {detect_timezone()} — change it with configure.py, option 2, if that's not yours.)")
+    tz = detect_timezone()
+    values = common.build_env_dict(token, chat_model, response_style, tz)
+    common.write_env_file(values)
+    print(f"(Timezone set to {tz} — change it with configure.py, option 2, if that's not yours.)")
     common.setup_venv()
+
+    print("\nSetting up location, web search, and (optionally) email...")
+    subprocess.run([common.venv_python_path(), "configure.py", "--first-time-setup"], check=True)
 
     as_service = input("\nSet it up to start automatically when you log in? [y/N]: ").strip().lower()
     if as_service == "y":

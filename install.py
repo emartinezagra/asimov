@@ -89,8 +89,12 @@ def main():
     response_style = common.choose_response_style()
     token = common.ask_telegram_token()
 
-    common.write_env(token, chat_model, response_style, detect_timezone())
+    values = common.build_env_dict(token, chat_model, response_style, detect_timezone())
+    common.write_env_file(values)
     common.setup_venv()
+
+    print("\nSetting up location, web search, and (optionally) email...")
+    subprocess.run([common.venv_python_path(), "configure.py", "--first-time-setup"], check=True)
 
     as_service = input("\nSet it up as a systemd service so it starts on its own? [y/N]: ").strip().lower()
     if as_service == "y":

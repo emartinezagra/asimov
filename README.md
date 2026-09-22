@@ -140,10 +140,13 @@ python configure.py
 
 1. **Response style** — as above.
 2. **Timezone** — the IANA timezone (e.g. `Europe/Madrid`) used to resolve reminder/calendar dates; validated against Python's `zoneinfo` before saving, so a typo can't silently break date resolution.
-3. **Email (contacts + SMTP)** — add `name:email` contacts one at a time (existing ones are shown and can be overwritten), and set the SMTP host/port/user/password/from address needed to actually send emails. The password prompt hides your input (`getpass`) and is never echoed or logged.
+3. **Email (contacts + SMTP)** — add `name:email` contacts one at a time (existing ones are shown and can be overwritten), and set the SMTP host/port/user/password/from address needed to actually send emails. The password prompt hides your input (`getpass`) and is never echoed or logged. If you say it's a Gmail account, it fills in `smtp.gmail.com:587` for you and opens [Google's app-password page](https://myaccount.google.com/apppasswords) in your browser — you sign in and generate the password there (in your own session, not through Asimov), then paste it back. That's as close as this gets to a "Gmail login button": a real OAuth flow would mean registering and maintaining a Google Cloud app (consent screen, verification, new dependencies) for what an app password already does in one browser tab.
 4. **Default location + web search** — the city used for weather questions that don't name one, and automatic detection/installation of a local SearXNG instance for `WEB_SEARCH` (see below for what "automatic" means in practice).
+5. **AI model** — re-runs the same lighter/heavier benchmarking loop from install, starting from whatever model you're currently on instead of re-guessing from hardware. Useful if the initial guess undershot (or overshot) what your machine can actually do.
 
 It only updates the section you picked, leaving the rest of `.env` (including the Telegram token) untouched, and restarts the bot automatically if it's running as a `systemd` service (Linux) or a `Asimov` Task Scheduler entry (Windows); otherwise it tells you how to restart it manually.
+
+**The installer also runs part of this automatically on first install** — right after the venv is ready, it invokes `configure.py --first-time-setup` (using the venv's own Python, since this step needs `requests`, not yet available under the system Python that runs the installer itself) to ask for your city and set up web search in one go, plus an optional prompt for email — so a fresh install already has those working instead of leaving them for you to remember to configure separately.
 
 ## Project layout
 
@@ -239,6 +242,8 @@ the model's own "missing" list is never the only check
 **Web search** (`tools/websearch.py`) talks to a self-hosted [SearXNG](https://docs.searxng.org/) instance (`SEARXNG_URL`) instead of a third-party search API directly — **the model never touches the network**; a `SearchService` class makes the HTTP request (with a timeout and one small retry) and only a compact `title`/`url`/`snippet` per result (top 5, each capped in length) ever reaches the LLM, never raw SearXNG JSON. This is the **one deliberate exception** to "never a second Ollama call": raw snippets need language understanding to become a natural answer, which a fixed template can't do, so `actions._summarize_search_results()` sends just those compact results back for a synthesis pass — explicitly instructed to answer only from what's there rather than filling gaps from the model's own (possibly outdated) knowledge. If `SEARXNG_URL` isn't set or SearXNG is unreachable, the bot says so plainly (`SearchError`) instead of crashing or failing silently.
 
 ### Setting up SearXNG (automatic)
+
+Runs automatically as part of the installer's first-time setup (see above) — you're only asked for your city, not whether to install it. To redo it later:
 
 ```bash
 python configure.py   # option 4

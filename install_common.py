@@ -127,8 +127,14 @@ def benchmark(model):
     return time.time() - start
 
 
-def choose_chat_model(ram_gb, cpu_cores, gpu):
-    idx = initial_tier_index(ram_gb, cpu_cores, gpu)
+def tier_index_for_model(model_name):
+    for i, t in enumerate(MODEL_TIERS):
+        if t["name"] == model_name:
+            return i
+    return None
+
+
+def interactive_model_loop(idx):
     while True:
         model = MODEL_TIERS[idx]["name"]
         ollama_pull(model)
@@ -164,6 +170,20 @@ def choose_chat_model(ram_gb, cpu_cores, gpu):
         return model
 
 
+def choose_chat_model(ram_gb, cpu_cores, gpu):
+    return interactive_model_loop(initial_tier_index(ram_gb, cpu_cores, gpu))
+
+
+def choose_chat_model_from_current(current_model):
+    """Used by configure.py to change the model later: starts the same
+    lighter/heavier loop from wherever the current model already sits,
+    instead of re-guessing from hardware."""
+    idx = tier_index_for_model(current_model)
+    if idx is None:
+        idx = len(MODEL_TIERS) - 1  # unknown/custom model: start conservative
+    return interactive_model_loop(idx)
+
+
 def choose_response_style():
     print("\nChoose the bot's response style:")
     for i, key in enumerate(RESPONSE_STYLE_ORDER, start=1):
@@ -175,28 +195,32 @@ def choose_response_style():
         print("Invalid option.")
 
 
-def write_env(telegram_token, chat_model, response_style, timezone):
-    with open(".env", "w") as f:
-        f.write(f"TELEGRAM_TOKEN={telegram_token}\n")
-        f.write(f"OLLAMA_URL={OLLAMA_URL}\n")
-        f.write("OLLAMA_KEEP_ALIVE=30m\n")
-        f.write(f"CHAT_MODEL={chat_model}\n")
-        f.write(f"RESPONSE_STYLE={response_style}\n")
-        f.write("DB_PATH=./conversations.db\n")
-        f.write(f"TIMEZONE={timezone}\n")
-        f.write("CONTACTS=\n")
-        f.write("EMAIL_SMTP_HOST=\n")
-        f.write("EMAIL_SMTP_PORT=587\n")
-        f.write("EMAIL_USER=\n")
-        f.write("EMAIL_PASSWORD=\n")
-        f.write("EMAIL_FROM=\n")
-        f.write("DEFAULT_LOCATION=\n")
-        f.write("SEARXNG_URL=\n")
-    print(".env created.")
-    print("Reminders, calendar, notes, tasks and memory work out of the box.")
-    print("To enable sending emails, weather, or web search, edit .env (or run")
-    print("configure.py) and fill in CONTACTS/EMAIL_*, DEFAULT_LOCATION, and")
-    print("SEARXNG_URL respectively (see README).")
+def build_env_dict(telegram_token, chat_model, response_style, timezone):
+    """Just builds the values — doesn't write anything. The installer fills
+    in more (location/email/web search) via configure.first_time_setup()
+    before writing the file once, at the end."""
+    return {
+        "TELEGRAM_TOKEN": telegram_token,
+        "OLLAMA_URL": OLLAMA_URL,
+        "OLLAMA_KEEP_ALIVE": "30m",
+        "CHAT_MODEL": chat_model,
+        "RESPONSE_STYLE": response_style,
+        "DB_PATH": "./conversations.db",
+        "TIMEZONE": timezone,
+        "CONTACTS": "",
+        "EMAIL_SMTP_HOST": "",
+        "EMAIL_SMTP_PORT": "587",
+        "EMAIL_USER": "",
+        "EMAIL_PASSWORD": "",
+        "EMAIL_FROM": "",
+        "DEFAULT_LOCATION": "",
+        "SEARXNG_URL": "",
+    }
+
+
+def venv_python_path():
+    return os.path.join("venv", "Scripts", "python.exe") if platform.system() == "Windows" \
+        else os.path.join("venv", "bin", "python")
 
 
 def setup_venv():
@@ -207,6 +231,17 @@ def setup_venv():
         else os.path.join("venv", "Scripts", "pip.exe")
     print("Installing dependencies...")
     subprocess.run([pip, "install", "-r", "requirements.txt"], check=True)
+
+
+def write_env_file(values, path=".env"):
+    """Simple, self-contained writer (no import of configure.py here) so
+    install.py/install_windows.py don't need requests etc. importable under
+    the system Python before the venv exists — first_time_setup() (which
+    does need those) runs afterward, via the venv's own Python."""
+    with open(path, "w") as f:
+        for key, value in values.items():
+            f.write(f"{key}={value}\n")
+    print(f"{path} created.")
 
 
 def ask_telegram_token():
