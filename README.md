@@ -4,7 +4,11 @@ Telegram bot with structured persistent memory and progressive conversation summ
 
 ## Quick install (recommended)
 
-Only needs Python 3 and `curl`. The installer handles the rest: installs Ollama if missing, detects the machine's RAM/CPU/GPU to pick a starting model, and shows you the real response time of each one, asking whether you want to try a lighter one.
+There's an installer for **Linux** and one for **Windows** — both share all the OS-agnostic logic (hardware detection, model selection/benchmarking, response style, `.env` writing) and only differ in how Ollama gets installed and how the bot is set to autostart. Mac isn't automated yet — follow the manual installation below.
+
+### Linux
+
+Only needs Python 3 and `curl`. The installer installs Ollama if missing, detects the machine's RAM/CPU/GPU to pick a starting model, and shows you the real response time of each one, asking whether you want to try a lighter one.
 
 ```bash
 git clone https://github.com/emartinezagra/asimov.git
@@ -14,7 +18,19 @@ cd asimov
 
 It will ask you to choose the bot's response style, your Telegram token (from [@BotFather](https://t.me/BotFather)), and at the end whether you want to register it as a `systemd` service so it starts on its own.
 
-> The automatic installer (`install.sh`/`install.py`) only supports **Linux** for now. For Windows/Mac, follow the manual installation below.
+### Windows
+
+Needs [Python 3](https://python.org) and [Git](https://git-scm.com/downloads) (or download the repo as a zip). Ollama has no unattended installer on Windows, so this guides you to it instead of running it silently:
+
+```powershell
+git clone https://github.com/emartinezagra/asimov.git
+cd asimov
+.\install.ps1
+```
+
+Same questions as the Linux installer, and at the end it offers to register a **Task Scheduler** entry (`schtasks`, built into Windows — no extra tools) so Asimov starts automatically when you log in.
+
+> If PowerShell refuses to run the script ("running scripts is disabled"), either run `python install_windows.py` directly instead, or allow local scripts for your user once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
 ## Manual installation
 
@@ -81,9 +97,15 @@ python bot.py
 # Ctrl+B, D to detach while leaving it running
 ```
 
+On Windows without the Task Scheduler entry (see `install_windows.py` above), just leave the console window open:
+```powershell
+venv\Scripts\activate
+python bot.py
+```
+
 ## How the installer picks a model
 
-`install.py` first detects RAM, CPU core count, and whether there's an NVIDIA GPU, and uses that to pick a starting model:
+`install.py`/`install_windows.py` (via the shared `install_common.py`) first detect RAM, CPU core count, and whether there's an NVIDIA GPU, and use that to pick a starting model:
 
 | Model | Rough minimum RAM |
 |---|---|
@@ -107,7 +129,7 @@ The bot replies according to one of three styles, defined in [response_styles.py
 
 (The instruction text itself stays in Spanish, since that's the language the bot talks to Telegram users in.)
 
-Chosen the first time in `install.py`, and saved to `.env` as `RESPONSE_STYLE`. To change it — or the other settings below — later:
+Chosen the first time in the installer, and saved to `.env` as `RESPONSE_STYLE`. To change it — or the other settings below — later:
 
 ```bash
 source venv/bin/activate
@@ -121,7 +143,7 @@ python configure.py
 3. **Email (contacts + SMTP)** — add `name:email` contacts one at a time (existing ones are shown and can be overwritten), and set the SMTP host/port/user/password/from address needed to actually send emails. The password prompt hides your input (`getpass`) and is never echoed or logged.
 4. **Default location + web search** — the city used for weather questions that don't name one, and automatic detection/installation of a local SearXNG instance for `WEB_SEARCH` (see below for what "automatic" means in practice).
 
-It only updates the section you picked, leaving the rest of `.env` (including the Telegram token) untouched, and restarts the bot automatically if it's running as a `systemd` service; otherwise it tells you how to restart it manually.
+It only updates the section you picked, leaving the rest of `.env` (including the Telegram token) untouched, and restarts the bot automatically if it's running as a `systemd` service (Linux) or a `Asimov` Task Scheduler entry (Windows); otherwise it tells you how to restart it manually.
 
 ## Project layout
 
@@ -134,7 +156,11 @@ It only updates the section you picked, leaving the rest of `.env` (including th
 | `datetime_utils.py` | Timezone-aware "now", and the only place that validates dates/times. |
 | `scheduler.py` | Polls SQLite for due reminders and delivers them via Telegram. |
 | `db.py` | All SQLite access: conversations, messages, memory, reminders, events, drafts. |
-| `tools/reminders.py`, `tools/calendar.py`, `tools/email.py` | One file per tool; this is where new ones get added. |
+| `tools/reminders.py`, `tools/calendar.py`, `tools/email.py`, `tools/notes.py`, `tools/tasks.py`, `tools/memory.py`, `tools/weather.py`, `tools/websearch.py` | One file per tool; this is where new ones get added. |
+| `searxng_manager.py` | Detects/installs/health-checks the local SearXNG instance `tools/websearch.py` talks to. |
+| `install_common.py` | OS-agnostic installer logic shared by `install.py` (Linux) and `install_windows.py`. |
+| `install.py` / `install_windows.py` | Platform-specific installer bits: getting Ollama installed and setting up autostart (`systemd` vs Task Scheduler). |
+| `configure.py` | Post-install settings menu (response style, timezone, email, location/search); shared across platforms. |
 
 ## Context architecture
 
@@ -222,10 +248,10 @@ This detects and reuses whatever's already there before touching anything (safe 
 1. If `SEARXNG_URL` in `.env` already points to a working instance, it's reused as-is — nothing is installed.
 2. Otherwise, if a container named `asimov-searxng` already exists, it's started if stopped and reused.
 3. Otherwise, if Docker is available, it installs SearXNG itself: generates `searxng/settings.yml` (JSON API enabled, the bot-detection rate limiter disabled since Asimov is its only client, `search.secret_key` generated once with `secrets.token_urlsafe(32)` and never regenerated on later runs) and starts a container named `asimov-searxng` with `--restart unless-stopped`, published **only** to `127.0.0.1:8080` — never a public port. `searxng/` is gitignored since it holds that secret key.
-4. If Docker isn't installed, it offers to install it (official `get.docker.com` script, asks for confirmation first since it needs `sudo`); if Docker is installed but the current user can't use it (not in the `docker` group), it explains the exact command needed and stops — it never runs `usermod` silently, since that requires logging back in to take effect anyway.
+4. If Docker isn't installed, it offers to install it — on Linux, the official `get.docker.com` script (asks for confirmation first since it needs `sudo`); on Windows, it points you to the [Docker Desktop](https://www.docker.com/products/docker-desktop/) download and waits for you to install and start it (no unattended installer for that one). If Docker is installed on Linux but the current user can't use it (not in the `docker` group), it explains the exact command needed and stops — it never runs `usermod` silently, since that requires logging back in to take effect anyway.
 5. If port 8080 is already taken by something else, it asks for an alternate port instead of guessing one.
 
-Asimov itself runs directly on the host (not in Docker), so only SearXNG runs containerized; no Docker Compose is introduced into the project for this.
+Asimov itself runs directly on the host (not in Docker), so only SearXNG runs containerized; no Docker Compose is introduced into the project for this. The `docker` CLI commands `searxng_manager.py` runs are identical on Linux and Windows (Docker Desktop provides the same `docker` client), so this whole flow works the same on both once Docker itself is available.
 
 Check its status any time without going through the menu:
 ```bash

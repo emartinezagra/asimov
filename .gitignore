@@ -10,3 +10,6 @@ logs/*.log*
 
 # Generated locally by configure.py, contains a secret_key.
 searxng/
+
+# Generated locally by install_windows.py.
+run_asimov.bat

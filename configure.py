@@ -2,6 +2,7 @@
 """Change Asimov's settings (stored in .env) and restart the bot."""
 import getpass
 import os
+import platform
 import subprocess
 import sys
 
@@ -32,6 +33,20 @@ def write_env(values):
 
 
 def restart_bot():
+    if platform.system() == "Windows":
+        result = subprocess.run(["schtasks", "/query", "/tn", "Asimov"], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("\nRestarting the 'Asimov' scheduled task...")
+            print("(If bot.py is already running in a console window, close that window first.)")
+            subprocess.run(["schtasks", "/run", "/tn", "Asimov"])
+            print("Done.")
+        else:
+            print("\nNo 'Asimov' scheduled task found.")
+            print("If you're running it in a console window, close it and start it again:")
+            print("  venv\\Scripts\\activate")
+            print("  python bot.py")
+        return
+
     if os.path.exists(SYSTEMD_UNIT_PATH):
         print("\nRestarting systemd service 'asimov'...")
         subprocess.run(["sudo", "systemctl", "restart", "asimov"], check=True)

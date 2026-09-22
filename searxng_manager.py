@@ -10,6 +10,7 @@ so this uses a single `docker run` for SearXNG only, published to
 """
 import logging
 import os
+import platform
 import secrets
 import shutil
 import socket
@@ -146,6 +147,18 @@ def start_existing_container():
 
 
 def _offer_docker_install():
+    if platform.system() == "Windows":
+        print("Docker Desktop no está instalado. Es necesario para instalar SearXNG automáticamente.")
+        print("Descárgalo de: https://www.docker.com/products/docker-desktop/")
+        input("Pulsa Enter cuando lo hayas instalado y arrancado (icono en la bandeja del sistema)...")
+        available, _ = docker_available()
+        if available:
+            return None
+        return (
+            "Docker sigue sin responder. Comprueba que Docker Desktop esté arrancado "
+            "(su icono debe aparecer en la bandeja del sistema) y vuelve a ejecutar: python configure.py"
+        )
+
     print("Docker no está instalado. Es necesario para instalar SearXNG automáticamente.")
     answer = input(
         "¿Instalar Docker ahora con el script oficial de docker.com (pide sudo)? [y/N]: "
@@ -195,6 +208,12 @@ def configure_searxng(current_url=None):
     available, reason = docker_available()
     if not available:
         if reason == "permission_denied":
+            if platform.system() == "Windows":
+                return None, (
+                    "Docker está instalado pero no se puede usar desde esta sesión. "
+                    "Comprueba que tu usuario esté en el grupo 'docker-users' (Docker Desktop suele "
+                    "añadirlo automáticamente) y que hayas cerrado sesión tras instalarlo."
+                )
             return None, (
                 "Docker está instalado pero tu usuario no tiene permiso para usarlo.\n"
                 "Ejecuta esto y vuelve a iniciar sesión (o reinicia la terminal):\n"
@@ -206,6 +225,8 @@ def configure_searxng(current_url=None):
             if msg is None:
                 return configure_searxng(current_url)
             return None, msg
+        if platform.system() == "Windows":
+            return None, "No se pudo conectar con Docker. Comprueba que Docker Desktop esté arrancado."
         return None, "No se pudo conectar con Docker. Comprueba: sudo systemctl status docker"
 
     print("Docker: OK")
